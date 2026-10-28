@@ -12,11 +12,14 @@ class RemoteTests(unittest.TestCase):
         script = step("run-build-remote", "build-remote")["script"].split("<<'REMOTE'\n", 1)[1].split("\nREMOTE\n", 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "source").mkdir()
-            (root / "source/output.txt").write_text("expected output")
-            (root / "source/same-link").symlink_to("./output.txt")
-            (root / "source/sub").mkdir()
-            (root / "source/sub/parent-link").symlink_to("../output.txt")
+            (root / "source/out").mkdir(parents=True)
+            (root / "source/out/output.txt").write_text("expected output")
+            (root / "source/private-source.txt").write_text("must not be returned")
+            (root / "source/out/same-link").symlink_to("./output.txt")
+            (root / "source/out/sub").mkdir()
+            (root / "source/out/sub/parent-link").symlink_to("../output.txt")
+            (root / "inputs/out").mkdir(parents=True)
+            (root / "inputs/out/generated.txt").write_text("preceding build output")
             bin_dir = root / "bin"
             bin_dir.mkdir()
             podman = bin_dir / "podman"
@@ -29,7 +32,7 @@ case "$1" in
  pull) : ;;
  image) printf 'sha256:%064d' 0 ;;
  create) printf fixture-container ;;
- cp) if [[ "$2" == - ]]; then mkdir -p "$FIXTURE_ROOT/received"; tar -xf - -C "$FIXTURE_ROOT/received"; else cp -a "$FIXTURE_ROOT/received/var/workdir/source/." "$3"; fi ;;
+ cp) if [[ "$2" == - ]]; then mkdir -p "$FIXTURE_ROOT/received"; tar -xf - -C "$FIXTURE_ROOT/received"; else cp -a "$FIXTURE_ROOT/received${2#fixture-container:}" "$3"; fi ;;
  start) cat >/dev/null ;;
  inspect) printf 0 ;;
  rm) : ;;
@@ -39,9 +42,11 @@ esac
             podman.chmod(0o755)
             result = subprocess.run(["bash", "-s", "--", str(root), "registry.example/builder@sha256:" + "a" * 64, "build.sh"], input=script, env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FIXTURE_ROOT": str(root), "REQUIRE_MOUNT_ISOLATION": "true"}, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue((root / "output/output.txt").exists(), "attached container consumed the copy-back commands")
-            self.assertEqual(os.readlink(root / "output/same-link"), "./output.txt")
-            self.assertEqual(os.readlink(root / "output/sub/parent-link"), "../output.txt")
+            self.assertTrue((root / "output/out/output.txt").exists(), "attached container consumed the copy-back commands")
+            self.assertEqual(os.readlink(root / "output/out/same-link"), "./output.txt")
+            self.assertEqual(os.readlink(root / "output/out/sub/parent-link"), "../output.txt")
+            self.assertEqual(sorted(p.name for p in (root / "output").iterdir()), ["out"])
+            self.assertEqual((root / "received/var/workdir/inputs/out/generated.txt").read_text(), "preceding build output")
 
     def test_supplied_known_hosts_uses_strict_verification(self):
         script = step("run-build-remote", "build-remote")["script"].split("remote()", 1)[0]

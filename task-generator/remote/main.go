@@ -75,7 +75,7 @@ func convert(task map[string]any, stepName, taskName, selectScript, remoteScript
 	remoteStep := map[string]any{
 		"name": "build-remote", "image": trustedImage, "script": remoteScript,
 		"when":         when("remote"),
-		"env":          []any{env("SSH_DIR", "/ssh"), env("SOURCE_ROOT", "/var/workdir/source"), env("CONTROL_ROOT", "/var/workdir/control"), env("BUILDER_IMAGE", "$(params.image)"), env("SCRIPT_PATH", "$(params.script-path)")},
+		"env":          []any{env("SSH_DIR", "/ssh"), env("SOURCE_ROOT", "/var/workdir/source"), env("INPUT_ROOT", "/var/workdir/inputs"), env("CONTROL_ROOT", "/var/workdir/control"), env("BUILDER_IMAGE", "$(params.image)"), env("SCRIPT_PATH", "$(params.script-path)")},
 		"volumeMounts": []any{sshMount, mount("workdir", "/var/workdir")},
 	}
 	recordStep := map[string]any{

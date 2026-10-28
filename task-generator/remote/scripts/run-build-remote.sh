@@ -43,8 +43,9 @@ printf -v quoted '%q' "$base/byob.XXXXXXXX"
 remote_dir=$(remote "mktemp -d $quoted")
 [[ "$remote_dir" == "$base"/byob.* && "$remote_dir" != *$'\n'* ]] || exit 1
 printf -v quoted '%q' "$remote_dir"
-remote "mkdir -p $quoted/source"
+remote "mkdir -p $quoted/source $quoted/inputs"
 tar -C "$SOURCE_ROOT" -cf - . | remote "tar -xf - -C $quoted/source"
+tar -C "$INPUT_ROOT" -cf - . | remote "tar -xf - -C $quoted/inputs"
 printf -v args '%q ' "$remote_dir" "$BUILDER_IMAGE" "$SCRIPT_PATH"
 remote "bash -s -- $args" <<'REMOTE'
 set -euo pipefail
@@ -62,19 +63,27 @@ digest=$(podman image inspect --format '{{.Digest}}' "$image")
 printf '%s@%s' "${image%@*}" "$digest" > "$directory/builder-image"
 container=$(podman create --user 1000:0 --cap-drop ALL \
     --security-opt no-new-privileges --tmpfs /run/secrets:rw,noexec,nosuid,nodev --http-proxy=false --entrypoint /bin/sh \
-    --workdir /var/workdir/source --env HOME=/tmp/byob-home \
-    "$image" -c 'mkdir -p "$HOME"; exec "./$1"' run-build "$script")
+    --workdir /var/workdir/source --env HOME=/tmp/byob-home --env BUILD_INPUTS=/var/workdir/inputs \
+    "$image" -eu -c 'mkdir -p "$HOME"; exec "./$1"' run-build "$script")
 # Copy a directory tree into the stopped container without host bind mounts.
-tar -C "$directory/source" --transform 'flags=rh;s,^\.,var/workdir/source,' -cf - . | podman cp - "$container:/"
+# Avoid padding past the archive end: Podman's copier can close its pipe early.
+tar --blocking-factor=1 -C "$directory/source" --transform 'flags=rh;s,^\.,var/workdir/source,' -cf - . | podman cp - "$container:/"
+tar --blocking-factor=1 -C "$directory/inputs" --transform 'flags=rh;s,^\.,var/workdir/inputs,' -cf - . | podman cp - "$container:/"
 # Do not let attached execution consume the remaining bash -s program from SSH.
 podman start --attach "$container" </dev/null
 [[ "$(podman inspect --format '{{.State.ExitCode}}' "$container")" == 0 ]] || exit 1
-mkdir "$directory/output"
-podman cp "$container:/var/workdir/source/." "$directory/output/"
+mkdir "$directory/returned-source" "$directory/output"
+# Copy the parent so Podman preserves an out/ symlink instead of following it.
+# This temporary source snapshot stays on the VM; only out/ is returned below.
+podman cp "$container:/var/workdir/source/." "$directory/returned-source/"
+[[ -d "$directory/returned-source/out" && ! -L "$directory/returned-source/out" ]] || { echo 'out/ must be a real directory' >&2; exit 1; }
+mv "$directory/returned-source/out" "$directory/output/out"
 REMOTE
 remote "cat $quoted/builder-image" > "$CONTROL_ROOT/builder-image"
 returned=$(mktemp -d "$CONTROL_ROOT/returned.XXXXXXXX")
 remote "tar -C $quoted/output -cf - ." | tar --no-same-owner -xf - -C "$returned"
-# The following trusted validation step checks the copied tree before export.
-rm -rf -- "$SOURCE_ROOT"
-mv "$returned" "$SOURCE_ROOT"
+# Keep the original checkout; return only the declared build outputs.
+# The trusted validation step checks out/ before staging it for export.
+rm -rf -- "$SOURCE_ROOT/out"
+mv "$returned/out" "$SOURCE_ROOT/out"
+rmdir "$returned"

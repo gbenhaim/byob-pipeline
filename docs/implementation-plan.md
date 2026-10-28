@@ -13,9 +13,11 @@ generator's approach, localhost support, and a mixed-platform matrix example.
   image never receives the controller's SSH Secret.
 - Remote execution uses rootless Podman, with copied source rather than host bind
   mounts. The controller owns remote VM lifetime. localhost uses the local step.
-- Each build consumes/emits SOURCE_ARTIFACT. Only pack publishes IMAGE_URL and
-  IMAGE_DIGEST. pack accepts an array of artifacts, with flat or platform layout.
-- Matrix results carry their platform inside the trusted exported source tree;
+- Each build consumes checkout's SOURCE_ARTIFACT and emits BUILD_ARTIFACT containing
+  only out/ and platform metadata. A chained step also consumes its predecessor's
+  BUILD_ARTIFACT. Only pack publishes IMAGE_URL and IMAGE_DIGEST. pack accepts an
+  array of build artifacts, with flat or platform layout.
+- Matrix results carry their platform inside the trusted exported build artifact;
   packaging never assumes ordering of parallel TaskRun results.
 - Admission, Conforma, Source VSA, signing, isolated credential delivery, and
   validation of Tekton's local step isolation remain external prerequisites.
@@ -54,3 +56,22 @@ and documented `tkn`/`kubectl` commands. Runtime behavior stays the same.
    examples plus explicit publishing, installation, and test commands. Validate
    examples and preserve literal build settings and bundle reference structure.
 4. Run `make check` and `make smoke`, review the cleanup, and commit locally.
+
+## Build output handoffs
+
+The user explicitly requested output-only intermediate uploads. This overrides
+the ADR's full-source-tree handoff: every build restores the original checkout,
+and an optional BUILD_ARTIFACT restores preceding outputs at BUILD_INPUTS/out/.
+The existing source checkout artifact remains necessary to distribute reviewed
+source; run-build never republishes it.
+
+1. Cover output-only staging, invalid output paths, matrix metadata, and chained
+   execution with behavioral tests. Keep source-path injection regressions.
+2. Stage validated out/ in a separate Task volume accessible only to trusted
+   validation/export steps. Export BUILD_ARTIFACT from that volume, update pack
+   and Pipeline wiring, and remove the unused prepare/export branches.
+3. Transfer preceding outputs to remote builders and return only out/. Regenerate
+   the remote Task and preserve localhost behavior.
+4. Update examples/docs and exercise real output artifact upload/restore, chained
+   builds, packaging, and remote output copy-back in the container smoke test.
+   Run make check and make smoke, obtain an independent review, and commit locally.

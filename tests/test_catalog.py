@@ -79,7 +79,8 @@ class CatalogTests(unittest.TestCase):
             results = {r["name"]: r for r in self.task(name)["spec"]["results"]}
             self.assertNotIn("IMAGE_URL", results)
             self.assertNotIn("IMAGE_DIGEST", results)
-            self.assertIn("steps.export.results.SOURCE_ARTIFACT", results["SOURCE_ARTIFACT"]["value"])
+            self.assertNotIn("SOURCE_ARTIFACT", results)
+            self.assertIn("steps.export.results.BUILD_ARTIFACT", results["BUILD_ARTIFACT"]["value"])
         names = {r["name"] for r in self.task("pack")["spec"]["results"]}
         self.assertTrue({"IMAGE_URL", "IMAGE_DIGEST", "SBOM_BLOB_URL"}.issubset(names))
 
@@ -90,12 +91,29 @@ class CatalogTests(unittest.TestCase):
         tasks = {t["name"]: t for t in spec["tasks"]}
         self.assertEqual(tasks["build"]["matrix"]["params"][0]["name"], "PLATFORM")
         params = {p["name"]: p["value"] for p in tasks["pack"]["params"]}
-        self.assertEqual(params["SOURCE_ARTIFACT"], ["$(tasks.build.results.SOURCE_ARTIFACT[*])"])
+        self.assertEqual(params["BUILD_ARTIFACT"], ["$(tasks.build.results.BUILD_ARTIFACT[*])"])
         self.assertEqual(params["layout"], "platform")
         self.assertEqual({p["name"] for p in spec["params"]}, {"git-url", "revision", "output-image", "oci-storage"})
         self.assertFalse(spec.get("workspaces"))
         for task in tasks.values():
             self.assertNotIn("taskSpec", task)
+
+    def test_export_volume_is_private_and_does_not_include_source(self):
+        for name in ("run-build", "run-build-remote"):
+            steps = {s["name"]: s for s in self.task(name)["spec"]["steps"]}
+            export = steps["export"]
+            self.assertIn("$(step.results.BUILD_ARTIFACT.path)=/var/build-output", export["args"])
+            self.assertNotIn("workdir", [m["name"] for m in export["volumeMounts"]])
+            for step in steps.values():
+                if step["image"] == "$(params.image)":
+                    self.assertNotIn("build-output", [m["name"] for m in step["volumeMounts"]])
+
+    def test_chained_build_uses_original_checkout_and_separate_outputs(self):
+        spec = yaml.safe_load((ROOT / "pipelines/byob-chained.yaml").read_text())["spec"]
+        tasks = {t["name"]: t for t in spec["tasks"]}
+        params = {p["name"]: p["value"] for p in tasks["build"]["params"]}
+        self.assertEqual(params["SOURCE_ARTIFACT"], "$(tasks.checkout.results.SOURCE_ARTIFACT)")
+        self.assertEqual(params["BUILD_ARTIFACT"], "$(tasks.codegen.results.BUILD_ARTIFACT)")
 
 
 if __name__ == "__main__":

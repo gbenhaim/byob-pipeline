@@ -7,8 +7,8 @@ metadata:
   annotations:
     tekton.dev/pipelines.minVersion: 1.16.0
 spec:
-  description: Execute a repository script in a non-root developer image and export the modified source
-    as a Trusted Artifact.
+  description: Execute a repository script in a non-root developer image and export only out/ as a Trusted
+    Artifact.
   params:
   - name: image
     type: string
@@ -20,7 +20,11 @@ spec:
     default: build.sh
   - name: SOURCE_ARTIFACT
     type: string
-    description: Source Trusted Artifact from the preceding task.
+    description: Original checkout Trusted Artifact, restored independently for every build.
+  - name: BUILD_ARTIFACT
+    type: string
+    description: Optional preceding build output, restored under BUILD_INPUTS.
+    default: ''
   - name: ociStorage
     type: string
     description: Platform-owned OCI repository (without a tag) for handoffs.
@@ -29,10 +33,10 @@ spec:
     description: Optional Trusted Artifact retention period.
     default: ''
   results:
-  - name: SOURCE_ARTIFACT
+  - name: BUILD_ARTIFACT
     type: string
-    description: Modified source tree.
-    value: $(steps.export.results.SOURCE_ARTIFACT)
+    description: Build outputs under out/, with optional platform metadata.
+    value: $(steps.export.results.BUILD_ARTIFACT)
   stepTemplate:
     securityContext:
       runAsUser: 1000
@@ -46,6 +50,8 @@ spec:
         type: RuntimeDefault
   volumes:
   - name: workdir
+    emptyDir: {}
+  - name: build-output
     emptyDir: {}
   - name: registry-auth
     secret:
@@ -69,17 +75,36 @@ spec:
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
+  - name: restore-inputs
+    image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      mkdir -p /var/workdir/inputs
+      if [[ -n "$BUILD_ARTIFACT" ]]; then
+          [[ "$BUILD_ARTIFACT" =~ ^oci:.+@sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid build artifact reference' >&2; exit 1; }
+          /usr/local/bin/use-archive "$BUILD_ARTIFACT=/var/workdir/inputs"
+      fi
+    env:
+    - name: AUTHFILE
+      value: /var/run/byob-registry-auth/config.json
+    - name: BUILD_ARTIFACT
+      value: $(params.BUILD_ARTIFACT)
+    volumeMounts:
+    - name: workdir
+      mountPath: /var/workdir
+    - name: registry-auth
+      mountPath: /var/run/byob-registry-auth
+      readOnly: true
   - name: prepare
     image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
     script: |
       #!/usr/bin/env python3
-      """Validate source in a trusted image, never in the developer image."""
+      """Validate the restored source and selected script before execution."""
       import os
       from pathlib import Path
-      import re
-      import sys
-
       import stat
+      import sys
 
 
       def safe_relative(value):
@@ -106,36 +131,18 @@ spec:
                       raise ValueError(f"unsupported special file: {path}")
 
 
-
       def main():
           source = Path(os.environ["SOURCE_ROOT"])
-          mode = os.environ["MODE"]
-          marker = source / ".konflux-platform"
-          if mode == "export" and (marker.exists() or marker.is_symlink()):
-              # Never follow an attacker-supplied marker, including a dangling symlink.
-              marker.unlink()
           check_tree(source)
-          if (source / ".skip-trusted-artifacts").exists():
-              raise ValueError("source must not disable Trusted Artifact publication")
-          if mode == "prepare":
-              relative = safe_relative(os.environ["SCRIPT_PATH"])
-              script = (source / relative).resolve(strict=True)
-              if not script.is_relative_to(source.resolve()) or not script.is_file():
-                  raise ValueError("script must be a file inside the source tree")
-              if not os.access(script, os.X_OK):
-                  raise ValueError("script must be executable and have an interpreter shebang")
-              with script.open("rb") as contents:
-                  if contents.read(2) != b"#!":
-                      raise ValueError("script must have an interpreter shebang")
-          elif mode == "export":
-              platform = os.environ.get("BUILD_PLATFORM", "")
-              if platform:
-                  if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", platform):
-                      raise ValueError("invalid platform label")
-                  safe_relative(platform)
-                  marker.write_text(platform + "\n")
-          else:
-              raise ValueError(f"unknown validation mode: {mode}")
+          relative = safe_relative(os.environ["SCRIPT_PATH"])
+          script = (source / relative).resolve(strict=True)
+          if not script.is_relative_to(source.resolve()) or not script.is_file():
+              raise ValueError("script must be a file inside the source tree")
+          if not os.access(script, os.X_OK):
+              raise ValueError("script must be executable and have an interpreter shebang")
+          with script.open("rb") as contents:
+              if contents.read(2) != b"#!":
+                  raise ValueError("script must have an interpreter shebang")
 
 
       if __name__ == "__main__":
@@ -146,8 +153,6 @@ spec:
     env:
     - name: SOURCE_ROOT
       value: /var/workdir/source
-    - name: MODE
-      value: prepare
     - name: SCRIPT_PATH
       value: $(params.script-path)
     volumeMounts:
@@ -167,6 +172,8 @@ spec:
     env:
     - name: HOME
       value: /tmp/byob-home
+    - name: BUILD_INPUTS
+      value: /var/workdir/inputs
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
@@ -180,13 +187,13 @@ spec:
     image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
     script: |
       #!/usr/bin/env python3
-      """Validate source in a trusted image, never in the developer image."""
+      """Stage only build outputs in a volume inaccessible to the developer step."""
       import os
       from pathlib import Path
       import re
-      import sys
-
+      import shutil
       import stat
+      import sys
 
 
       def safe_relative(value):
@@ -213,60 +220,50 @@ spec:
                       raise ValueError(f"unsupported special file: {path}")
 
 
-
       def main():
           source = Path(os.environ["SOURCE_ROOT"])
-          mode = os.environ["MODE"]
-          marker = source / ".konflux-platform"
-          if mode == "export" and (marker.exists() or marker.is_symlink()):
-              # Never follow an attacker-supplied marker, including a dangling symlink.
-              marker.unlink()
-          check_tree(source)
-          if (source / ".skip-trusted-artifacts").exists():
-              raise ValueError("source must not disable Trusted Artifact publication")
-          if mode == "prepare":
-              relative = safe_relative(os.environ["SCRIPT_PATH"])
-              script = (source / relative).resolve(strict=True)
-              if not script.is_relative_to(source.resolve()) or not script.is_file():
-                  raise ValueError("script must be a file inside the source tree")
-              if not os.access(script, os.X_OK):
-                  raise ValueError("script must be executable and have an interpreter shebang")
-              with script.open("rb") as contents:
-                  if contents.read(2) != b"#!":
-                      raise ValueError("script must have an interpreter shebang")
-          elif mode == "export":
-              platform = os.environ.get("BUILD_PLATFORM", "")
-              if platform:
-                  if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", platform):
-                      raise ValueError("invalid platform label")
-                  safe_relative(platform)
-                  marker.write_text(platform + "\n")
-          else:
-              raise ValueError(f"unknown validation mode: {mode}")
+          if source.is_symlink() or not source.is_dir():
+              raise ValueError("source must remain a real directory")
+          output = source / "out"
+          check_tree(output)
+          if not any(p.is_file() and not p.is_symlink() for p in output.rglob("*")):
+              raise ValueError("out/ must contain at least one regular file")
+          platform = os.environ.get("BUILD_PLATFORM", "")
+          if platform:
+              if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", platform):
+                  raise ValueError("invalid platform label")
+              safe_relative(platform)
+          artifact = Path(os.environ["ARTIFACT_ROOT"])
+          shutil.copytree(output, artifact / "out", symlinks=True)
+          if platform:
+              (artifact / ".konflux-platform").write_text(platform + "\n")
 
 
       if __name__ == "__main__":
           try:
               main()
           except (OSError, ValueError, RuntimeError) as error:
-              sys.exit(f"source validation failed: {error}")
+              sys.exit(f"output validation failed: {error}")
     env:
     - name: SOURCE_ROOT
       value: /var/workdir/source
-    - name: MODE
-      value: export
+    - name: ARTIFACT_ROOT
+      value: /var/build-output
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
+      readOnly: true
+    - name: build-output
+      mountPath: /var/build-output
   - name: export
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
     args:
     - create
     - --store
     - $(params.ociStorage):$(context.taskRun.name)
-    - $(step.results.SOURCE_ARTIFACT.path)=/var/workdir/source
+    - $(step.results.BUILD_ARTIFACT.path)=/var/build-output
     results:
-    - name: SOURCE_ARTIFACT
+    - name: BUILD_ARTIFACT
       type: string
     env:
     - name: AUTHFILE
@@ -274,8 +271,9 @@ spec:
     - name: IMAGE_EXPIRES_AFTER
       value: $(params.ociArtifactExpiresAfter)
     volumeMounts:
-    - name: workdir
-      mountPath: /var/workdir
+    - name: build-output
+      mountPath: /var/build-output
+      readOnly: true
     - name: registry-auth
       mountPath: /var/run/byob-registry-auth
       readOnly: true

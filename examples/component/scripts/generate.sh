@@ -1,3 +1,4 @@
 #!/bin/sh
 set -eu
-printf 'Generated from reviewed source\n' > generated.txt
+mkdir -p out
+printf 'Generated from reviewed source\n' > out/generated.txt

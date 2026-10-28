@@ -62,9 +62,9 @@ spec:
     taskRef:
       name: pack
     params:
-    - name: SOURCE_ARTIFACT
+    - name: BUILD_ARTIFACT
       value:
-      - $(tasks.build.results.SOURCE_ARTIFACT)
+      - $(tasks.build.results.BUILD_ARTIFACT)
     - name: IMAGE
       value: $(params.output-image)
     - name: artifactType

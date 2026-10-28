@@ -46,22 +46,62 @@ class FilesystemTests(unittest.TestCase):
         result = self.run_script("run-build", "prepare", SOURCE_ROOT=source, SCRIPT_PATH="build.sh", MODE="prepare")
         self.assertNotEqual(result.returncode, 0)
 
-    def test_source_rejects_fifo_and_skip_marker(self):
-        for entry in ("fifo", ".skip-trusted-artifacts"):
-            source = self.source(entry.replace(".", "x"))
-            if entry == "fifo":
-                os.mkfifo(source / entry)
-            else:
-                (source / entry).touch()
-            result = self.run_script("run-build", "validate-output", SOURCE_ROOT=source, MODE="export", BUILD_PLATFORM="linux/arm64")
-            self.assertNotEqual(result.returncode, 0)
+    def export(self, source, platform="", name="artifact"):
+        artifact = self.root / name
+        artifact.mkdir(exist_ok=True)
+        result = self.run_script("run-build", "validate-output", SOURCE_ROOT=source, ARTIFACT_ROOT=artifact, BUILD_PLATFORM=platform)
+        return result, artifact
 
-    def test_platform_marker_replaces_user_file(self):
+    def test_output_artifact_contains_only_deliverables(self):
         source = self.source()
-        (source / ".konflux-platform").write_text("forged")
-        result = self.run_script("run-build-remote", "validate-output", SOURCE_ROOT=source, MODE="export", BUILD_PLATFORM="linux/arm64")
+        (source / "out").mkdir()
+        (source / "out/hello").write_text("deliverable")
+        (source / "out/link").symlink_to("hello")
+        (source / "changed-source").write_text("must not be exported")
+        (source / ".skip-trusted-artifacts").touch()
+        os.mkfifo(source / "build-cache-fifo")
+        result, artifact = self.export(source)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((source / ".konflux-platform").read_text(), "linux/arm64\n")
+        self.assertEqual(sorted(p.name for p in artifact.iterdir()), ["out"])
+        self.assertEqual((artifact / "out/hello").read_text(), "deliverable")
+        self.assertEqual(os.readlink(artifact / "out/link"), "hello")
+
+    def test_output_rejects_missing_empty_special_and_escaping_paths(self):
+        for case in ("missing", "empty", "fifo", "escape", "absolute", "output-symlink", "source-symlink"):
+            with self.subTest(case=case):
+                source = self.source(case)
+                output = source / "out"
+                if case != "missing":
+                    output.mkdir()
+                if case not in ("missing", "empty"):
+                    (output / "hello").write_text("hello")
+                if case == "fifo":
+                    os.mkfifo(output / "fifo")
+                elif case == "escape":
+                    (output / "escape").symlink_to("../build.sh")
+                elif case == "absolute":
+                    (output / "link").symlink_to(output / "hello")
+                elif case == "output-symlink":
+                    output.rename(source / "other")
+                    output.symlink_to("other")
+                elif case == "source-symlink":
+                    link = self.root / "source-link"
+                    link.symlink_to(source)
+                    source = link
+                result, artifact = self.export(source, name=case + "-artifact")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(list(artifact.iterdir()), [])
+
+    def test_platform_metadata_is_separate_from_user_outputs(self):
+        source = self.source()
+        (source / "out").mkdir()
+        (source / "out/hello").write_text("deliverable")
+        (source / ".konflux-platform").write_text("forged")
+        result, artifact = self.export(source, "linux/arm64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((artifact / ".konflux-platform").read_text(), "linux/arm64\n")
+        self.assertEqual((source / ".konflux-platform").read_text(), "forged")
+        self.assertEqual(sorted(p.name for p in artifact.iterdir()), [".konflux-platform", "out"])
 
     def input_tree(self, index, platform, contents):
         source = self.root / "inputs" / str(index)

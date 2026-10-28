@@ -9,9 +9,9 @@ metadata:
 spec:
   description: Pack one or several build outputs into an OCI artifact and attach its SPDX SBOM.
   params:
-  - name: SOURCE_ARTIFACT
+  - name: BUILD_ARTIFACT
     type: array
-    description: Trusted source trees containing out/.
+    description: Build output Trusted Artifacts containing out/ and optional platform metadata.
   - name: IMAGE
     type: string
     description: Tagged destination for the component build artifact.
@@ -60,7 +60,7 @@ spec:
     script: |
       #!/bin/bash
       set -euo pipefail
-      [[ $# -gt 0 ]] || { echo 'At least one source artifact is required' >&2; exit 1; }
+      [[ $# -gt 0 ]] || { echo 'At least one build artifact is required' >&2; exit 1; }
       mkdir -p /var/workdir/inputs
       index=0
       for artifact in "$@"; do
@@ -71,7 +71,7 @@ spec:
           index=$((index + 1))
       done
     args:
-    - $(params.SOURCE_ARTIFACT[*])
+    - $(params.BUILD_ARTIFACT[*])
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json

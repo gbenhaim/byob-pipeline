@@ -22,28 +22,45 @@ them to in-cluster execution and dedicated remote VMs respectively. `localhost`
 is supported, without SSH or Podman in the local path. Mixed local/remote matrix
 runs produce `linux-amd64/` and `linux-arm64/` directories in the final archive.
 Result order is immaterial: trusted export code records the platform in each
-source artifact after the build. All matrix builds must succeed before packaging.
+build artifact after the build. All matrix builds must succeed before packaging.
 
 ## Task contract
 
-- `run-build` takes `image`, `script-path`, `SOURCE_ARTIFACT`, and platform-owned
-  `ociStorage`/`ociArtifactExpiresAfter`. It emits `SOURCE_ARTIFACT` for the entire
-  modified tree. `run-build-remote` additionally takes `PLATFORM`.
+- `run-build` takes `image`, `script-path`, checkout's `SOURCE_ARTIFACT`, and
+  platform-owned `ociStorage`/`ociArtifactExpiresAfter`. It emits `BUILD_ARTIFACT`
+  containing only `out/`, plus platform metadata for matrix builds. The source
+  tree, build scripts, and caches outside `out/` are never re-exported.
+  `run-build-remote` additionally takes `PLATFORM`.
+- A chained step restores the original `SOURCE_ARTIFACT` and takes its
+  predecessor's `BUILD_ARTIFACT` as a separate optional input. Previous outputs
+  are available at `$BUILD_INPUTS/out/` (`/var/workdir/inputs/out/`) on local and
+  remote builders. Each step writes its own deliverables to `out/`; it must copy
+  any preceding outputs it wants to retain. The chained example demonstrates this.
 - The script path is relative to the source root, executable, and has a shebang.
   Images must provide `/bin/sh` and the script's interpreter. The image entrypoint
   is bypassed. Scripts run as UID 1000/GID 0 with dropped capabilities and no
   privilege escalation; their working directory is `/var/workdir/source`.
 - Scripts may fetch dependencies. Absolute/traversing script paths, escaping
   symlinks, and special files are rejected. No cache or PVC is shared between runs.
-- `pack` accepts an **array** named `SOURCE_ARTIFACT`. `layout: flat` requires one
+- After the script finishes, `validate-output` checks only `out/` and copies it
+  into a separate volume mounted only by trusted validation/export steps. Output
+  must be a real directory with at least one regular file; symlinks must stay
+  within `out/`. The remote launcher returns only `out/` from the VM.
+- `pack` accepts an **array** named `BUILD_ARTIFACT`. `layout: flat` requires one
   artifact; `layout: platform` combines matrix outputs. `layout` is platform-owned.
-  Each source must contain nonempty `out/` with regular files and optional safe
+  Each build artifact contains nonempty `out/` with regular files and optional safe
   relative symlinks. Packaging never executes source files.
 - The default OCI `artifactType` is `application/vnd.konflux.build-output.v1` with
   a deterministic `application/vnd.oci.image.layer.v1.tar+gzip` layer. Formats may
   set a different literal `artifactType` in the committed PipelineRun.
 - Only `pack` emits `IMAGE_URL`/`IMAGE_DIGEST`. Its `SBOM_BLOB_URL` identifies the
   attached SPDX JSON blob. Pipeline source identity comes directly from checkout.
+
+This output-only handoff is an intentional change from the ADR's original
+full-source `SOURCE_ARTIFACT` chain. Checkout still publishes the reviewed source
+once so the build Tasks can restore it. Every subsequent intermediate upload
+contains only build outputs and optional platform metadata; the final package
+contains the contents of `out/` without that metadata.
 
 ## Install and run
 
@@ -152,7 +169,8 @@ Admission, release policy, signing, and controller deployment are outside this r
   platform manifest digests may differ; policy must verify their relationship.
 - The future Conforma policy must allow the actual checkout identity
   `git-clone-oci-ta`, the two BYOB Tasks, and `pack`, verify artifact chains including
-  array inputs, and require ADR-55 Source VSA evidence. Admission must enforce the
+  checkout's `SOURCE_ARTIFACT`, chained `BUILD_ARTIFACT`, and pack's array inputs,
+  and require ADR-55 Source VSA evidence. Admission must enforce the
   reviewed literals and reject inline Tasks and execution overrides. New bundles
   require the normal signing/review process before that policy can trust them.
 

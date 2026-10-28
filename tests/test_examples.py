@@ -30,6 +30,8 @@ class ExampleTests(unittest.TestCase):
             self.assertRegex(next(p["value"] for p in ref["params"] if p["name"] == "bundle"), r"@sha256:[a-f0-9]{64}$")
         build = next(t for t in tasks if t["name"] == "build")
         self.assertEqual(build["matrix"]["params"], [{"name": "PLATFORM", "value": ["linux/amd64", "linux/arm64"]}])
+        pack = next(t for t in tasks if t["name"] == "pack")
+        self.assertEqual(next(p["value"] for p in pack["params"] if p["name"] == "BUILD_ARTIFACT"), ["$(tasks.build.results.BUILD_ARTIFACT[*])"])
 
     def test_local_task_propagates_script_failure_and_treats_path_as_data(self):
         path = ROOT / "task/run-build/0.1/run-build.yaml"
