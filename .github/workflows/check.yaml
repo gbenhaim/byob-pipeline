@@ -9,15 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - uses: actions/setup-go@v5
         with:
-          go-version-file: tests/tekton/go.mod
+          go-version-file: go.mod
           cache-dependency-path: |
-            task-generator/remote/go.sum
+            go.sum
             tests/tekton/go.sum
-      - run: pip install -r requirements-dev.txt
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: make check

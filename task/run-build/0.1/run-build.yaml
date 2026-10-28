@@ -7,8 +7,7 @@ metadata:
   annotations:
     tekton.dev/pipelines.minVersion: 1.16.0
 spec:
-  description: Execute a repository script in a non-root developer image and export only out/ as a Trusted
-    Artifact.
+  description: Execute a repository script in a non-root developer image and export only out/ as a Trusted Artifact.
   params:
   - name: image
     type: string
@@ -76,21 +75,12 @@ spec:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
   - name: restore-inputs
-    image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+    image: localhost/byob-cli:devel
     args:
+    - restore-inputs
+    - --root=/var/workdir/inputs
+    - --
     - $(params.BUILD_ARTIFACTS[*])
-    script: |
-      #!/bin/bash
-      set -euo pipefail
-      mkdir -p /var/workdir/inputs
-      index=0
-      for artifact in "$@"; do
-          [[ "$artifact" =~ ^oci:.+@sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid build artifact reference' >&2; exit 1; }
-          destination="/var/workdir/inputs/$index"
-          mkdir -p "$destination"
-          /usr/local/bin/use-archive "$artifact=$destination"
-          index=$((index + 1))
-      done
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
@@ -100,68 +90,19 @@ spec:
     - name: registry-auth
       mountPath: /var/run/byob-registry-auth
       readOnly: true
+    command:
+    - /usr/local/bin/byob
   - name: prepare
-    image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
-    script: |
-      #!/usr/bin/env python3
-      """Validate the restored source and selected script before execution."""
-      import os
-      from pathlib import Path
-      import stat
-      import sys
-
-
-      def safe_relative(value):
-          path = Path(value)
-          if not value or path.is_absolute() or ".." in path.parts:
-              raise ValueError(f"expected a relative path without '..': {value!r}")
-          return path
-
-
-      def check_tree(root):
-          if root.is_symlink() or not root.is_dir():
-              raise ValueError(f"expected a real directory: {root}")
-          root = root.resolve(strict=True)
-          for directory, dirs, files in os.walk(root, followlinks=False):
-              for name in dirs + files:
-                  path = Path(directory) / name
-                  mode = path.lstat().st_mode
-                  if stat.S_ISLNK(mode):
-                      # Absolute links would point somewhere different after extraction.
-                      target = os.readlink(path)
-                      if os.path.isabs(target) or not path.resolve().is_relative_to(root):
-                          raise ValueError(f"symlink escapes artifact: {path}")
-                  elif not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
-                      raise ValueError(f"unsupported special file: {path}")
-
-
-      def main():
-          source = Path(os.environ["SOURCE_ROOT"])
-          check_tree(source)
-          relative = safe_relative(os.environ["SCRIPT_PATH"])
-          script = (source / relative).resolve(strict=True)
-          if not script.is_relative_to(source.resolve()) or not script.is_file():
-              raise ValueError("script must be a file inside the source tree")
-          if not os.access(script, os.X_OK):
-              raise ValueError("script must be executable and have an interpreter shebang")
-          with script.open("rb") as contents:
-              if contents.read(2) != b"#!":
-                  raise ValueError("script must have an interpreter shebang")
-
-
-      if __name__ == "__main__":
-          try:
-              main()
-          except (OSError, ValueError, RuntimeError) as error:
-              sys.exit(f"source validation failed: {error}")
-    env:
-    - name: SOURCE_ROOT
-      value: /var/workdir/source
-    - name: SCRIPT_PATH
-      value: $(params.script-path)
+    image: localhost/byob-cli:devel
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
+    command:
+    - /usr/local/bin/byob
+    args:
+    - prepare
+    - --source=/var/workdir/source
+    - --script=$(params.script-path)
   - name: build
     image: $(params.image)
     command:
@@ -188,77 +129,19 @@ spec:
       limits:
         memory: 2Gi
   - name: validate-output
-    image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
-    script: |
-      #!/usr/bin/env python3
-      """Stage only build outputs in a volume inaccessible to the developer step."""
-      import os
-      from pathlib import Path
-      import re
-      import shutil
-      import stat
-      import sys
-
-
-      def safe_relative(value):
-          path = Path(value)
-          if not value or path.is_absolute() or ".." in path.parts:
-              raise ValueError(f"expected a relative path without '..': {value!r}")
-          return path
-
-
-      def check_tree(root):
-          if root.is_symlink() or not root.is_dir():
-              raise ValueError(f"expected a real directory: {root}")
-          root = root.resolve(strict=True)
-          for directory, dirs, files in os.walk(root, followlinks=False):
-              for name in dirs + files:
-                  path = Path(directory) / name
-                  mode = path.lstat().st_mode
-                  if stat.S_ISLNK(mode):
-                      # Absolute links would point somewhere different after extraction.
-                      target = os.readlink(path)
-                      if os.path.isabs(target) or not path.resolve().is_relative_to(root):
-                          raise ValueError(f"symlink escapes artifact: {path}")
-                  elif not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
-                      raise ValueError(f"unsupported special file: {path}")
-
-
-      def main():
-          source = Path(os.environ["SOURCE_ROOT"])
-          if source.is_symlink() or not source.is_dir():
-              raise ValueError("source must remain a real directory")
-          output = source / "out"
-          check_tree(output)
-          if not any(p.is_file() and not p.is_symlink() for p in output.rglob("*")):
-              raise ValueError("out/ must contain at least one regular file")
-          platform = os.environ.get("BUILD_PLATFORM", "")
-          if platform:
-              if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", platform):
-                  raise ValueError("invalid platform label")
-              safe_relative(platform)
-          artifact = Path(os.environ["ARTIFACT_ROOT"])
-          shutil.copytree(output, artifact / "out", symlinks=True)
-          if platform:
-              (artifact / ".konflux-platform").write_text(platform + "\n")
-
-
-      if __name__ == "__main__":
-          try:
-              main()
-          except (OSError, ValueError, RuntimeError) as error:
-              sys.exit(f"output validation failed: {error}")
-    env:
-    - name: SOURCE_ROOT
-      value: /var/workdir/source
-    - name: ARTIFACT_ROOT
-      value: /var/build-output
+    image: localhost/byob-cli:devel
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
       readOnly: true
     - name: build-output
       mountPath: /var/build-output
+    command:
+    - /usr/local/bin/byob
+    args:
+    - stage-output
+    - --source=/var/workdir/source
+    - --output=/var/build-output
   - name: export
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
     args:

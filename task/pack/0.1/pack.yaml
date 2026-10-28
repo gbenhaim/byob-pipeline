@@ -56,21 +56,12 @@ spec:
         path: config.json
   steps:
   - name: restore
-    image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
-    script: |
-      #!/bin/bash
-      set -euo pipefail
-      [[ $# -gt 0 ]] || { echo 'At least one build artifact is required' >&2; exit 1; }
-      mkdir -p /var/workdir/inputs
-      index=0
-      for artifact in "$@"; do
-          [[ "$artifact" =~ ^oci:.+@sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid Trusted Artifact reference' >&2; exit 1; }
-          destination="/var/workdir/inputs/$index"
-          mkdir -p "$destination"
-          /usr/local/bin/use-archive "$artifact=$destination"
-          index=$((index + 1))
-      done
+    image: localhost/byob-cli:devel
     args:
+    - restore-inputs
+    - --root=/var/workdir/inputs
+    - --require
+    - --
     - $(params.BUILD_ARTIFACTS[*])
     env:
     - name: AUTHFILE
@@ -81,117 +72,21 @@ spec:
     - name: registry-auth
       mountPath: /var/run/byob-registry-auth
       readOnly: true
+    command:
+    - /usr/local/bin/byob
   - name: prepare
-    image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
-    script: |
-      #!/usr/bin/env python3
-      """Stage validated outputs and produce a deterministic OCI payload."""
-      import gzip
-      import os
-      from pathlib import Path
-      import re
-      import shutil
-      import sys
-      import tarfile
-
-      import stat
-
-
-      def safe_relative(value):
-          path = Path(value)
-          if not value or path.is_absolute() or ".." in path.parts:
-              raise ValueError(f"expected a relative path without '..': {value!r}")
-          return path
-
-
-      def check_tree(root):
-          if root.is_symlink() or not root.is_dir():
-              raise ValueError(f"expected a real directory: {root}")
-          root = root.resolve(strict=True)
-          for directory, dirs, files in os.walk(root, followlinks=False):
-              for name in dirs + files:
-                  path = Path(directory) / name
-                  mode = path.lstat().st_mode
-                  if stat.S_ISLNK(mode):
-                      # Absolute links would point somewhere different after extraction.
-                      target = os.readlink(path)
-                      if os.path.isabs(target) or not path.resolve().is_relative_to(root):
-                          raise ValueError(f"symlink escapes artifact: {path}")
-                  elif not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
-                      raise ValueError(f"unsupported special file: {path}")
-
-
-
-      def main():
-          inputs = Path(os.environ["INPUT_ROOT"])
-          package = Path(os.environ["PACKAGE_ROOT"])
-          archive = Path(os.environ["ARCHIVE_PATH"])
-          layout = os.environ["LAYOUT"]
-          sources = sorted(inputs.iterdir())
-          if not sources or (layout == "flat" and len(sources) != 1):
-              raise ValueError("flat layout requires one source; platform layout requires at least one")
-          if layout not in ("flat", "platform"):
-              raise ValueError(f"unknown layout: {layout}")
-          destinations = set()
-          selected = []
-          for source in sources:
-              if source.is_symlink() or not source.is_dir():
-                  raise ValueError("source must be a real directory")
-              output = source / "out"
-              check_tree(output)
-              if not any(p.is_file() and not p.is_symlink() for p in output.rglob("*")):
-                  raise ValueError(f"output has no regular files: {output}")
-              name = ""
-              if layout == "platform":
-                  marker = source / ".konflux-platform"
-                  if marker.is_symlink() or not marker.is_file():
-                      raise ValueError("missing trusted platform marker")
-                  platform = marker.read_text().strip()
-                  safe_relative(platform)
-                  if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", platform):
-                      raise ValueError("invalid platform label")
-                  name = re.sub(r"[^A-Za-z0-9]", "-", platform)
-                  if name in destinations:
-                      raise ValueError(f"duplicate platform directory: {name}")
-              destinations.add(name)
-              selected.append((output, name))
-          if package.exists():
-              shutil.rmtree(package)
-          package.mkdir(parents=True)
-          for output, name in selected:
-              shutil.copytree(output, package / name, symlinks=True, dirs_exist_ok=True)
-          archive.parent.mkdir(parents=True, exist_ok=True)
-          with archive.open("wb") as raw:
-              with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
-                  with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as tar:
-                      for path in sorted(package.rglob("*")):
-                          info = tar.gettarinfo(str(path), arcname=str(path.relative_to(package)))
-                          info.uid = info.gid = info.mtime = 0
-                          info.uname = info.gname = ""
-                          if info.isfile():
-                              with path.open("rb") as data:
-                                  tar.addfile(info, data)
-                          else:
-                              tar.addfile(info)
-
-
-      if __name__ == "__main__":
-          try:
-              main()
-          except (OSError, ValueError, RuntimeError) as error:
-              sys.exit(f"packaging failed: {error}")
-    env:
-    - name: INPUT_ROOT
-      value: /var/workdir/inputs
-    - name: PACKAGE_ROOT
-      value: /var/workdir/package
-    - name: ARCHIVE_PATH
-      value: /var/workdir/payload.tar.gz
-    - name: LAYOUT
-      value: $(params.layout)
+    image: localhost/byob-cli:devel
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
+    command:
+    - /usr/local/bin/byob
+    args:
+    - pack
+    - --inputs=/var/workdir/inputs
+    - --package=/var/workdir/package
+    - --archive=/var/workdir/payload.tar.gz
+    - --layout=$(params.layout)
   - name: sbom
     image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
     command:
@@ -204,35 +99,8 @@ spec:
     - name: workdir
       mountPath: /var/workdir
   - name: publish
-    image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+    image: localhost/byob-cli:devel
     workingDir: /var/workdir
-    script: |
-      #!/bin/bash
-      set -euo pipefail
-      auth_args=()
-      if [[ -f "$REGISTRY_AUTH_DIR/config.json" ]]; then
-          auth_args+=(--registry-config "$REGISTRY_AUTH_DIR/config.json")
-          export DOCKER_CONFIG="$REGISTRY_AUTH_DIR"
-      fi
-      oras push "${auth_args[@]}" --format json --artifact-type "$ARTIFACT_TYPE" \
-          "$IMAGE" payload.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip > manifest.json
-      digest=$(jq -er '.digest' manifest.json)
-      [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'Registry returned an invalid manifest digest' >&2; exit 1; }
-      repo=${IMAGE%@*}
-      if [[ "${repo##*/}" == *:* ]]; then repo=${repo%:*}; fi
-      cosign attach sbom --sbom sbom.spdx.json --type spdx "$repo@$digest"
-      sbom_digest=$(sha256sum sbom.spdx.json)
-      sbom_digest=${sbom_digest%% *}
-      printf '%s' "$IMAGE" > "$(step.results.IMAGE_URL.path)"
-      printf '%s' "$digest" > "$(step.results.IMAGE_DIGEST.path)"
-      printf '%s@sha256:%s' "$repo" "$sbom_digest" > "$(step.results.SBOM_BLOB_URL.path)"
-    env:
-    - name: IMAGE
-      value: $(params.IMAGE)
-    - name: ARTIFACT_TYPE
-      value: $(params.artifactType)
-    - name: REGISTRY_AUTH_DIR
-      value: /var/run/byob-registry-auth
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
@@ -246,3 +114,14 @@ spec:
       type: string
     - name: SBOM_BLOB_URL
       type: string
+    command:
+    - /usr/local/bin/byob
+    args:
+    - publish
+    - --workdir=/var/workdir
+    - --image=$(params.IMAGE)
+    - --artifact-type=$(params.artifactType)
+    - --auth-dir=/var/run/byob-registry-auth
+    - --url-result=$(step.results.IMAGE_URL.path)
+    - --digest-result=$(step.results.IMAGE_DIGEST.path)
+    - --sbom-result=$(step.results.SBOM_BLOB_URL.path)

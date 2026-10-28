@@ -3,10 +3,11 @@
 Adapted from [container-build-catalog's remote generator](https://github.com/konflux-ci/container-build-catalog/tree/85e966730ae50688b7f37c98cce47c3de5bdeb33/task-generator/remote), licensed under Apache-2.0.
 
 `make generate` produces only `run-build-remote` from the directly maintained
-local Task and the shell scripts in this directory's `scripts/`. Do not edit the
+local Task by adding `byob` CLI commands. Do not edit the
 generated YAML. The generator retains the upstream Task transformation approach,
 controller Secret naming, OTP protocol, and localhost behavior. It uses a smaller
-YAML-only Go dependency rather than the Kubernetes client stack.
+YAML-only Go dependency rather than the Kubernetes client stack. The generator
+shares the root Go 1.27 module with the PoC CLI.
 
 The upstream generator assumes a trusted Buildah image and a step named `build`.
 BYOB's build image is untrusted, so the generated Task has three distinct steps:
@@ -20,6 +21,8 @@ BYOB's build image is untrusted, so the generated Task has three distinct steps:
    host-volume option.
 
 The generator also wires platform metadata and the remote builder input result.
+Selection, SSH/OTP orchestration, and image recording live in `internal/remote`.
+Only the VM's Bash/Podman worker is embedded as shell code in the CLI.
 The local Task's private output staging volume and `BUILD_ARTIFACT` export are
 retained. Both local and remote scripts read the `BUILD_ARTIFACTS` array inputs at
 `$BUILD_INPUTS/<index>/out/`, starting at index zero.
@@ -29,9 +32,8 @@ automatic credential forwarding, and shared-volume assumptions.
 Manual invocation:
 
 ```sh
-cd task-generator/remote
-go run . --task ../../task/run-build/0.1/run-build.yaml \
-  --remote-task ../../task/run-build-remote/0.1/run-build-remote.yaml
+go run ./task-generator/remote --task task/run-build/0.1/run-build.yaml \
+  --remote-task task/run-build-remote/0.1/run-build-remote.yaml
 ```
 
 `make check-generated` regenerates into a temporary file and compares it with the

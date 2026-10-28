@@ -1,28 +1,33 @@
-PYTHON ?= python3
 export GOCACHE ?= /tmp/byob-go-cache
+CLI_IMAGE ?= localhost/byob-cli:devel
 
-.PHONY: generate check-generated check test lint validate smoke
+.PHONY: build image generate check-generated check test lint validate smoke
+build:
+	CGO_ENABLED=0 go build -trimpath -o dist/byob ./cmd/byob
+
+image:
+	podman build -t $(CLI_IMAGE) -f Containerfile .
+
 generate:
-	cd task-generator/remote && go run . --task ../../task/run-build/0.1/run-build.yaml --remote-task ../../task/run-build-remote/0.1/run-build-remote.yaml
+	go run ./task-generator/remote --task task/run-build/0.1/run-build.yaml --remote-task task/run-build-remote/0.1/run-build-remote.yaml
 
 check-generated:
 	@generated=$$(mktemp); trap 'rm -f "$$generated"' EXIT; \
-		(cd task-generator/remote && go run . --task ../../task/run-build/0.1/run-build.yaml --remote-task "$$generated") && \
+		go run ./task-generator/remote --task task/run-build/0.1/run-build.yaml --remote-task "$$generated" && \
 		diff -u task/run-build-remote/0.1/run-build-remote.yaml "$$generated"
 
 test:
-	$(PYTHON) -m unittest discover -s tests -v
-	cd task-generator/remote && go test ./...
+	go test ./...
 
 lint:
-	shellcheck task-generator/remote/scripts/*.sh examples/component/*.sh examples/component/scripts/*.sh
-	$(PYTHON) -m compileall -q tests
-	test -z "$$(cd task-generator/remote && gofmt -l .)"
+	shellcheck internal/remote/*.sh examples/component/*.sh examples/component/scripts/*.sh
+	test -z "$$(gofmt -l cmd internal task-generator tests)"
+	go vet ./...
 
 validate:
 	cd tests/tekton && go run . ../../task/*/0.1/*.yaml ../../pipelines/*.yaml ../../examples/pipelineruns/*.yaml ../../examples/pac/*.yaml
 
 check: check-generated test lint validate
 
-smoke:
-	$(PYTHON) tests/smoke.py
+smoke: build
+	BYOB_SMOKE=1 BYOB_CLI_IMAGE=$(CLI_IMAGE) go test -count=1 -timeout=15m -v ./tests/smoke

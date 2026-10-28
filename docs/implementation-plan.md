@@ -36,8 +36,9 @@ generator's approach, localhost support, and a mixed-platform matrix example.
 
 ## Validation
 
-Python unittest exercises filesystem behavior and shell helpers; Go tests exercise
-generation; ShellCheck checks scripts; generated remote Task drift is checked in CI.
+Go tests exercise filesystem behavior, CLI operations, remote orchestration,
+generation, and catalog wiring; ShellCheck checks the retained scripts; generated
+remote Task drift is checked in CI.
 An opt-in disposable-registry smoke test exercises real Trusted Artifact handoffs
 and packaging. Cluster tests require a deliberately selected Tekton environment.
 
@@ -77,3 +78,12 @@ source; run-build never republishes it.
 4. Update examples/docs and exercise real output artifact upload/restore, chained
    builds, packaging, and remote output copy-back in the container smoke test.
    Run make check and make smoke, obtain an independent review, and commit locally.
+
+## PoC Go CLI
+
+The subsequent migration moves trusted inline scripts into a Go 1.27 CLI and
+replaces Python tests, including the container smoke test, with Go tests. Task
+YAML remains directly maintained and the remote variant remains generated.
+The CLI image uses the Red Hat Go builder and the existing Konflux task-runner
+runtime tools. The detailed migration plan is in
+[the Go CLI plan](superpowers/plans/2026-10-28-go-cli.md).

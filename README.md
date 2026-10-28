@@ -7,6 +7,9 @@ OCI artifact with an SPDX SBOM. The default builder is digest-pinned Konflux
 `task-runner`; another image and script path can be literals in the committed
 PipelineRun.
 
+Trusted Task logic lives in the PoC `byob` Go CLI. The Tasks call its subcommands
+for validation, input restoration, packaging, publication, and remote execution.
+
 ## Pipelines
 
 | Pipeline | Behavior |
@@ -72,6 +75,12 @@ Remote platforms additionally require the multi-platform controller and rootless
 Podman on the allocated VM, including its `--default-mounts-file` global option
 (used to disable automatic host-secret mounts). Developer images must be publicly pullable on the VM;
 credentials are not forwarded there.
+
+The Tasks currently reference the local PoC image `localhost/byob-cli:devel`.
+Build it with `make image`. Before installing on a cluster, push the image to your
+registry, replace that reference in the two authored Tasks with the published
+`repository@sha256:digest`, and run `make generate` to update the remote Task.
+The local tag is for development; it is not a published catalog image.
 
 The development Pipelines reference locally installed Tasks. Checkout already
 uses the upstream digest-pinned `git-clone-oci-ta` bundle. After configuring the
@@ -180,29 +189,40 @@ Admission, release policy, signing, and controller deployment are outside this r
 ## Development and tests
 
 Edit `task/run-build/0.1/run-build.yaml`, `task/pack/0.1/pack.yaml`, and `pipelines/`
-directly, including their embedded scripts. These files are the source of truth.
-The three shell scripts in `task-generator/remote/scripts/` are inputs to the Go
-remote generator. Run `make generate` after changing `run-build` or the remote
-generator; only `task/run-build-remote/0.1/run-build-remote.yaml` is generated.
+directly. CLI code lives in `cmd/byob` and `internal/`; the Go remote generator
+adds CLI invocations to the local Task. Run `make generate` after changing
+`run-build` or the remote generator; only
+`task/run-build-remote/0.1/run-build-remote.yaml` is generated.
 Commit that output with its source changes. Update examples when changing their
 corresponding Pipeline definitions.
 
 ```sh
-python3 -m pip install -r requirements-dev.txt
+make build
 make generate
 make check
+make image
+make smoke
 ```
 
-`make check` checks remote Task drift, runs Python behavior tests against the
-scripts extracted from Task YAML, Go generator tests, and ShellCheck, and validates
-Tasks, Pipelines, and example PipelineRuns against Tekton 1.16's admission types.
-Go 1.26.4+, Python 3.11+, PyYAML, and ShellCheck are needed (the generator itself
-needs Go 1.23+). `catalog-lock.yaml` records the upstream versions inspected during
-implementation; it does not generate or override the pins in the manifests.
+Go 1.27 and ShellCheck are needed for `make check`; the image and smoke targets
+also need rootless Podman. `make check` runs Go behavior, CLI, catalog and generator
+tests, formatting/vet, ShellCheck for retained shell code, generated Task drift,
+and Tekton 1.16 admission validation. There is no Python test dependency.
 
-`make smoke` runs `tests/smoke.py`, using rootless Podman and a temporary local registry to exercise the
-real Trusted Artifact tools and output packaging. It pulls the pinned images and
-does not contact a Kubernetes cluster. A complete cluster check must additionally
+`Containerfile` builds with the digest-pinned Red Hat `hi/go:1.27` image and copies
+the binary into the pinned Konflux task-runner image, which supplies SSH, tar,
+ORAS, Syft, and Cosign. It also copies the upstream Trusted Artifacts restoration
+helpers so repository-specific registry authentication and retries stay upstream.
+The developer-image entry command still uses `/bin/sh`; the remote VM worker is
+a small Bash/Podman script embedded in the CLI. No CLI installation is required
+in developer images or on VMs. `catalog-lock.yaml` records inspected upstream
+versions; it does not generate or override manifest pins.
+
+`make smoke` runs the Go integration test in `tests/smoke`, using the locally built
+CLI image, rootless Podman, and a temporary registry to exercise real Trusted
+Artifact tools, output packaging, and remote execution through a local SSH
+transport fixture. It pulls the pinned upstream images and does not contact a
+Kubernetes cluster. A complete cluster check must additionally
 run the local and mixed-platform PipelineRuns in an explicitly selected test
 namespace, check their signed results, and verify VM cleanup after failure and
 cancellation; no configured cluster is used implicitly by these tools.

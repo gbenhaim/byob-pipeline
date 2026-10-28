@@ -75,116 +75,45 @@ spec:
               name: registry-auth
               readOnly: true
         - args:
+            - restore-inputs
+            - --root=/var/workdir/inputs
+            - --
             - $(params.BUILD_ARTIFACTS[*])
+          command:
+            - /usr/local/bin/byob
           env:
             - name: AUTHFILE
               value: /var/run/byob-registry-auth/config.json
-          image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+          image: localhost/byob-cli:devel
           name: restore-inputs
-          script: |
-            #!/bin/bash
-            set -euo pipefail
-            mkdir -p /var/workdir/inputs
-            index=0
-            for artifact in "$@"; do
-                [[ "$artifact" =~ ^oci:.+@sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid build artifact reference' >&2; exit 1; }
-                destination="/var/workdir/inputs/$index"
-                mkdir -p "$destination"
-                /usr/local/bin/use-archive "$artifact=$destination"
-                index=$((index + 1))
-            done
           volumeMounts:
             - mountPath: /var/workdir
               name: workdir
             - mountPath: /var/run/byob-registry-auth
               name: registry-auth
               readOnly: true
-        - env:
-            - name: SOURCE_ROOT
-              value: /var/workdir/source
-            - name: SCRIPT_PATH
-              value: $(params.script-path)
-          image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+        - args:
+            - prepare
+            - --source=/var/workdir/source
+            - --script=$(params.script-path)
+          command:
+            - /usr/local/bin/byob
+          image: localhost/byob-cli:devel
           name: prepare
-          script: |
-            #!/usr/bin/env python3
-            """Validate the restored source and selected script before execution."""
-            import os
-            from pathlib import Path
-            import stat
-            import sys
-
-
-            def safe_relative(value):
-                path = Path(value)
-                if not value or path.is_absolute() or ".." in path.parts:
-                    raise ValueError(f"expected a relative path without '..': {value!r}")
-                return path
-
-
-            def check_tree(root):
-                if root.is_symlink() or not root.is_dir():
-                    raise ValueError(f"expected a real directory: {root}")
-                root = root.resolve(strict=True)
-                for directory, dirs, files in os.walk(root, followlinks=False):
-                    for name in dirs + files:
-                        path = Path(directory) / name
-                        mode = path.lstat().st_mode
-                        if stat.S_ISLNK(mode):
-                            # Absolute links would point somewhere different after extraction.
-                            target = os.readlink(path)
-                            if os.path.isabs(target) or not path.resolve().is_relative_to(root):
-                                raise ValueError(f"symlink escapes artifact: {path}")
-                        elif not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
-                            raise ValueError(f"unsupported special file: {path}")
-
-
-            def main():
-                source = Path(os.environ["SOURCE_ROOT"])
-                check_tree(source)
-                relative = safe_relative(os.environ["SCRIPT_PATH"])
-                script = (source / relative).resolve(strict=True)
-                if not script.is_relative_to(source.resolve()) or not script.is_file():
-                    raise ValueError("script must be a file inside the source tree")
-                if not os.access(script, os.X_OK):
-                    raise ValueError("script must be executable and have an interpreter shebang")
-                with script.open("rb") as contents:
-                    if contents.read(2) != b"#!":
-                        raise ValueError("script must have an interpreter shebang")
-
-
-            if __name__ == "__main__":
-                try:
-                    main()
-                except (OSError, ValueError, RuntimeError) as error:
-                    sys.exit(f"source validation failed: {error}")
           volumeMounts:
             - mountPath: /var/workdir
               name: workdir
-        - env:
-            - name: SSH_DIR
-              value: /ssh
-          image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+        - args:
+            - select-platform
+            - --ssh-dir=/ssh
+            - --result=$(step.results.MODE.path)
+          command:
+            - /usr/local/bin/byob
+          image: localhost/byob-cli:devel
           name: select-platform
           results:
             - name: MODE
               type: string
-          script: |
-            #!/bin/bash
-            set -euo pipefail
-            if [[ -f "$SSH_DIR/error" ]]; then
-                cat "$SSH_DIR/error" >&2
-                exit 1
-            fi
-            host=$(cat "$SSH_DIR/host")
-            if [[ "$host" == localhost ]]; then
-                printf local > "$(step.results.MODE.path)"
-            elif [[ -n "$host" ]]; then
-                printf remote > "$(step.results.MODE.path)"
-            else
-                echo 'Controller supplied an empty host' >&2
-                exit 1
-            fi
           volumeMounts:
             - mountPath: /ssh
               name: ssh
@@ -219,111 +148,18 @@ spec:
               values:
                 - local
           workingDir: /var/workdir
-        - env:
-            - name: SSH_DIR
-              value: /ssh
-            - name: SOURCE_ROOT
-              value: /var/workdir/source
-            - name: INPUT_ROOT
-              value: /var/workdir/inputs
-            - name: CONTROL_ROOT
-              value: /var/workdir/control
-            - name: BUILDER_IMAGE
-              value: $(params.image)
-            - name: SCRIPT_PATH
-              value: $(params.script-path)
-          image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+        - args:
+            - build-remote
+            - --ssh-dir=/ssh
+            - --source=/var/workdir/source
+            - --inputs=/var/workdir/inputs
+            - --control=/var/workdir/control
+            - --image=$(params.image)
+            - --script=$(params.script-path)
+          command:
+            - /usr/local/bin/byob
+          image: localhost/byob-cli:devel
           name: build-remote
-          script: |
-            #!/bin/bash
-            # Controller/OTP protocol adapted from container-build-catalog's remote generator.
-            set -euo pipefail
-            mkdir -p "$CONTROL_ROOT"
-            private=$(mktemp -d)
-            remote_dir=''
-            host=$(cat "$SSH_DIR/host")
-            [[ "$host" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.@:-]*$ ]] || { echo 'Invalid SSH host' >&2; exit 1; }
-            [[ "$BUILDER_IMAGE" =~ ^.+@sha256:[a-f0-9]{64}$ ]] || { echo 'Builder image must be digest-pinned' >&2; exit 1; }
-            if [[ -f "$SSH_DIR/otp" ]]; then
-                curl --fail --silent --show-error --cacert "$SSH_DIR/otp-ca" \
-                    --data-binary "@$SSH_DIR/otp" "$(cat "$SSH_DIR/otp-server")" > "$private/key"
-                printf '\n' >> "$private/key"
-            else
-                cp "$SSH_DIR/id_rsa" "$private/key"
-            fi
-            chmod 0600 "$private/key"
-            host_key_mode=accept-new
-            if [[ -f "$SSH_DIR/known_hosts" ]]; then
-                cp "$SSH_DIR/known_hosts" "$private/known_hosts"
-                host_key_mode=yes
-            fi
-            ssh_options=(-F /dev/null -i "$private/key" -o "BatchMode=yes" -o "IdentitiesOnly=yes" \
-                -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" \
-                -o "UserKnownHostsFile=$private/known_hosts" -o "StrictHostKeyChecking=$host_key_mode")
-            # Arguments are trusted commands or escaped with printf %q at the call sites.
-            # shellcheck disable=SC2029
-            remote() { ssh "${ssh_options[@]}" "$host" "$@"; }
-            cleanup() {
-                status=$?
-                trap - EXIT
-                if [[ -n "$remote_dir" ]]; then
-                    printf -v quoted '%q' "$remote_dir"
-                    remote "rm -rf -- $quoted" >/dev/null 2>&1 || true
-                fi
-                rm -rf -- "$private"
-                exit "$status"
-            }
-            trap cleanup EXIT
-            base=$(cat "$SSH_DIR/user-dir")
-            [[ "$base" =~ ^/[a-zA-Z0-9_./-]+$ && "/$base/" != *'/../'* ]] || { echo 'Invalid controller user-dir' >&2; exit 1; }
-            printf -v quoted '%q' "$base/byob.XXXXXXXX"
-            remote_dir=$(remote "mktemp -d $quoted")
-            [[ "$remote_dir" == "$base"/byob.* && "$remote_dir" != *$'\n'* ]] || exit 1
-            printf -v quoted '%q' "$remote_dir"
-            remote "mkdir -p $quoted/source $quoted/inputs"
-            tar -C "$SOURCE_ROOT" -cf - . | remote "tar -xf - -C $quoted/source"
-            tar -C "$INPUT_ROOT" -cf - . | remote "tar -xf - -C $quoted/inputs"
-            printf -v args '%q ' "$remote_dir" "$BUILDER_IMAGE" "$SCRIPT_PATH"
-            remote "bash -s -- $args" <<'REMOTE'
-            set -euo pipefail
-            directory=$1 image=$2 script=$3
-            # This global Podman option disables mounts.conf injection at create AND start.
-            # The similarly named containers.conf field is internal and cannot be set in TOML.
-            podman() { command podman --default-mounts-file=/dev/null "$@"; }
-            [[ "$(podman info --format '{{.Host.Security.Rootless}}')" == true ]] || { echo 'Rootless Podman is required' >&2; exit 1; }
-            container=''
-            cleanup_container() { if [[ -n "$container" ]]; then podman rm -f "$container" >/dev/null; fi; }
-            trap cleanup_container EXIT
-            podman pull --quiet "$image"
-            digest=$(podman image inspect --format '{{.Digest}}' "$image")
-            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
-            printf '%s@%s' "${image%@*}" "$digest" > "$directory/builder-image"
-            container=$(podman create --user 1000:0 --cap-drop ALL \
-                --security-opt no-new-privileges --tmpfs /run/secrets:rw,noexec,nosuid,nodev --http-proxy=false --entrypoint /bin/sh \
-                --workdir /var/workdir/source --env HOME=/tmp/byob-home --env BUILD_INPUTS=/var/workdir/inputs \
-                "$image" -eu -c 'mkdir -p "$HOME"; exec "./$1"' run-build "$script")
-            # Copy a directory tree into the stopped container without host bind mounts.
-            # Avoid padding past the archive end: Podman's copier can close its pipe early.
-            tar --blocking-factor=1 -C "$directory/source" --transform 'flags=rh;s,^\.,var/workdir/source,' -cf - . | podman cp - "$container:/"
-            tar --blocking-factor=1 -C "$directory/inputs" --transform 'flags=rh;s,^\.,var/workdir/inputs,' -cf - . | podman cp - "$container:/"
-            # Do not let attached execution consume the remaining bash -s program from SSH.
-            podman start --attach "$container" </dev/null
-            [[ "$(podman inspect --format '{{.State.ExitCode}}' "$container")" == 0 ]] || exit 1
-            mkdir "$directory/returned-source" "$directory/output"
-            # Copy the parent so Podman preserves an out/ symlink instead of following it.
-            # This temporary source snapshot stays on the VM; only out/ is returned below.
-            podman cp "$container:/var/workdir/source/." "$directory/returned-source/"
-            [[ -d "$directory/returned-source/out" && ! -L "$directory/returned-source/out" ]] || { echo 'out/ must be a real directory' >&2; exit 1; }
-            mv "$directory/returned-source/out" "$directory/output/out"
-            REMOTE
-            remote "cat $quoted/builder-image" > "$CONTROL_ROOT/builder-image"
-            returned=$(mktemp -d "$CONTROL_ROOT/returned.XXXXXXXX")
-            remote "tar -C $quoted/output -cf - ." | tar --no-same-owner -xf - -C "$returned"
-            # Keep the original checkout; return only the declared build outputs.
-            # The trusted validation step checks out/ before staging it for export.
-            rm -rf -- "$SOURCE_ROOT/out"
-            mv "$returned/out" "$SOURCE_ROOT/out"
-            rmdir "$returned"
           volumeMounts:
             - mountPath: /ssh
               name: ssh
@@ -335,14 +171,15 @@ spec:
               operator: in
               values:
                 - remote
-        - env:
-            - name: EXECUTION_MODE
-              value: $(steps.select-platform.results.MODE)
-            - name: BUILDER_IMAGE
-              value: $(params.image)
-            - name: CONTROL_ROOT
-              value: /var/workdir/control
-          image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+        - args:
+            - record-image
+            - --mode=$(steps.select-platform.results.MODE)
+            - --image=$(params.image)
+            - --control=/var/workdir/control
+            - --result=$(step.results.BUILD_IMAGE_ARTIFACT_INPUTS.path)
+          command:
+            - /usr/local/bin/byob
+          image: localhost/byob-cli:devel
           name: record-image
           results:
             - name: BUILD_IMAGE_ARTIFACT_INPUTS
@@ -352,92 +189,18 @@ spec:
                 uri:
                     type: string
               type: object
-          script: |
-            #!/bin/bash
-            set -euo pipefail
-            image="$BUILDER_IMAGE"
-            if [[ "$EXECUTION_MODE" == remote ]]; then
-                image=$(cat "$CONTROL_ROOT/builder-image")
-            fi
-            if [[ ! "$image" =~ ^.+@sha256:[a-f0-9]{64}$ ]]; then
-                echo 'Builder must use an immutable sha256 image reference' >&2
-                exit 1
-            fi
-            # On localhost this is the requested input pin. Chains also records the actual
-            # developer step imageID. On remote it is the manifest observed by Podman.
-            jq -cn --arg uri "${image%@*}" --arg digest "${image##*@}" \
-                '{uri:$uri,digest:$digest}' > "$(step.results.BUILD_IMAGE_ARTIFACT_INPUTS.path)"
           volumeMounts:
             - mountPath: /var/workdir
               name: workdir
-        - env:
-            - name: SOURCE_ROOT
-              value: /var/workdir/source
-            - name: ARTIFACT_ROOT
-              value: /var/build-output
-            - name: BUILD_PLATFORM
-              value: $(params.PLATFORM)
-          image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+        - args:
+            - stage-output
+            - --source=/var/workdir/source
+            - --output=/var/build-output
+            - --platform=$(params.PLATFORM)
+          command:
+            - /usr/local/bin/byob
+          image: localhost/byob-cli:devel
           name: validate-output
-          script: |
-            #!/usr/bin/env python3
-            """Stage only build outputs in a volume inaccessible to the developer step."""
-            import os
-            from pathlib import Path
-            import re
-            import shutil
-            import stat
-            import sys
-
-
-            def safe_relative(value):
-                path = Path(value)
-                if not value or path.is_absolute() or ".." in path.parts:
-                    raise ValueError(f"expected a relative path without '..': {value!r}")
-                return path
-
-
-            def check_tree(root):
-                if root.is_symlink() or not root.is_dir():
-                    raise ValueError(f"expected a real directory: {root}")
-                root = root.resolve(strict=True)
-                for directory, dirs, files in os.walk(root, followlinks=False):
-                    for name in dirs + files:
-                        path = Path(directory) / name
-                        mode = path.lstat().st_mode
-                        if stat.S_ISLNK(mode):
-                            # Absolute links would point somewhere different after extraction.
-                            target = os.readlink(path)
-                            if os.path.isabs(target) or not path.resolve().is_relative_to(root):
-                                raise ValueError(f"symlink escapes artifact: {path}")
-                        elif not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
-                            raise ValueError(f"unsupported special file: {path}")
-
-
-            def main():
-                source = Path(os.environ["SOURCE_ROOT"])
-                if source.is_symlink() or not source.is_dir():
-                    raise ValueError("source must remain a real directory")
-                output = source / "out"
-                check_tree(output)
-                if not any(p.is_file() and not p.is_symlink() for p in output.rglob("*")):
-                    raise ValueError("out/ must contain at least one regular file")
-                platform = os.environ.get("BUILD_PLATFORM", "")
-                if platform:
-                    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", platform):
-                        raise ValueError("invalid platform label")
-                    safe_relative(platform)
-                artifact = Path(os.environ["ARTIFACT_ROOT"])
-                shutil.copytree(output, artifact / "out", symlinks=True)
-                if platform:
-                    (artifact / ".konflux-platform").write_text(platform + "\n")
-
-
-            if __name__ == "__main__":
-                try:
-                    main()
-                except (OSError, ValueError, RuntimeError) as error:
-                    sys.exit(f"output validation failed: {error}")
           volumeMounts:
             - mountPath: /var/workdir
               name: workdir

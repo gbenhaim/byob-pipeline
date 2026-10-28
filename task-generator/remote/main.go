@@ -30,7 +30,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func env(name, value string) map[string]any  { return map[string]any{"name": name, "value": value} }
 func mount(name, path string) map[string]any { return map[string]any{"name": name, "mountPath": path} }
 func when(mode string) []any {
 	return []any{map[string]any{"input": "$(steps.select-platform.results.MODE)", "operator": "in", "values": []any{mode}}}
@@ -40,7 +39,7 @@ func items(m map[string]any, key string) []any {
 	return result
 }
 
-func convert(task map[string]any, stepName, taskName, selectScript, remoteScript, recordScript string) error {
+func convert(task map[string]any, stepName, taskName string) error {
 	spec, ok := task["spec"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("missing Task spec")
@@ -66,21 +65,24 @@ func convert(task map[string]any, stepName, taskName, selectScript, remoteScript
 	sshMount["readOnly"] = true
 	selectStep := map[string]any{
 		"name": "select-platform", "image": trustedImage,
-		"script": selectScript, "env": []any{env("SSH_DIR", "/ssh")},
+		"command":      []any{"/usr/local/bin/byob"},
+		"args":         []any{"select-platform", "--ssh-dir=/ssh", "--result=$(step.results.MODE.path)"},
 		"volumeMounts": []any{sshMount},
 		"results":      []any{map[string]any{"name": "MODE", "type": "string"}},
 	}
 	builder["name"] = "build-local"
 	builder["when"] = when("local")
 	remoteStep := map[string]any{
-		"name": "build-remote", "image": trustedImage, "script": remoteScript,
+		"name": "build-remote", "image": trustedImage,
+		"command":      []any{"/usr/local/bin/byob"},
+		"args":         []any{"build-remote", "--ssh-dir=/ssh", "--source=/var/workdir/source", "--inputs=/var/workdir/inputs", "--control=/var/workdir/control", "--image=$(params.image)", "--script=$(params.script-path)"},
 		"when":         when("remote"),
-		"env":          []any{env("SSH_DIR", "/ssh"), env("SOURCE_ROOT", "/var/workdir/source"), env("INPUT_ROOT", "/var/workdir/inputs"), env("CONTROL_ROOT", "/var/workdir/control"), env("BUILDER_IMAGE", "$(params.image)"), env("SCRIPT_PATH", "$(params.script-path)")},
 		"volumeMounts": []any{sshMount, mount("workdir", "/var/workdir")},
 	}
 	recordStep := map[string]any{
-		"name": "record-image", "image": trustedImage, "script": recordScript,
-		"env":          []any{env("EXECUTION_MODE", "$(steps.select-platform.results.MODE)"), env("BUILDER_IMAGE", "$(params.image)"), env("CONTROL_ROOT", "/var/workdir/control")},
+		"name": "record-image", "image": trustedImage,
+		"command":      []any{"/usr/local/bin/byob"},
+		"args":         []any{"record-image", "--mode=$(steps.select-platform.results.MODE)", "--image=$(params.image)", "--control=/var/workdir/control", "--result=$(step.results.BUILD_IMAGE_ARTIFACT_INPUTS.path)"},
 		"volumeMounts": []any{mount("workdir", "/var/workdir")},
 		"results":      []any{map[string]any{"name": "BUILD_IMAGE_ARTIFACT_INPUTS", "type": "object", "properties": map[string]any{"uri": map[string]any{"type": "string"}, "digest": map[string]any{"type": "string"}}}},
 	}
@@ -94,7 +96,7 @@ func convert(task map[string]any, stepName, taskName, selectScript, remoteScript
 			steps = append(steps, selectStep, builder, remoteStep, recordStep)
 		} else {
 			if step["name"] == "validate-output" {
-				step["env"] = append(items(step, "env"), env("BUILD_PLATFORM", "$(params.PLATFORM)"))
+				step["args"] = append(items(step, "args"), "--platform=$(params.PLATFORM)")
 			}
 			steps = append(steps, step)
 		}
@@ -113,7 +115,6 @@ func run() error {
 	output := flag.String("remote-task", "", "generated Task YAML")
 	step := flag.String("step", "build", "developer step to wrap")
 	name := flag.String("name", "run-build-remote", "generated Task name")
-	scripts := flag.String("scripts", "scripts", "trusted helper scripts directory")
 	flag.Parse()
 	if *input == "" || *output == "" {
 		return fmt.Errorf("--task and --remote-task are required")
@@ -126,15 +127,7 @@ func run() error {
 	if err := yaml.Unmarshal(data, &task); err != nil {
 		return err
 	}
-	helpers := []string{}
-	for _, file := range []string{"select-platform.sh", "run-build-remote.sh", "record-image.sh"} {
-		data, err := os.ReadFile(filepath.Join(*scripts, file))
-		if err != nil {
-			return err
-		}
-		helpers = append(helpers, string(data))
-	}
-	if err := convert(task, *step, *name, helpers[0], helpers[1], helpers[2]); err != nil {
+	if err := convert(task, *step, *name); err != nil {
 		return err
 	}
 	data, err = yaml.Marshal(task)
