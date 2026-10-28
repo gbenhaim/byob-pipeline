@@ -101,7 +101,7 @@ spec:
         - name: kind
           value: task
       params:
-      - name: BUILD_ARTIFACT
+      - name: BUILD_ARTIFACTS
         value:
         - $(tasks.build.results.BUILD_ARTIFACT[*])
       - name: IMAGE

@@ -48,7 +48,7 @@ build artifact after the build. All matrix builds must succeed before packaging.
   into a separate volume mounted only by trusted validation/export steps. Output
   must be a real directory with at least one regular file; symlinks must stay
   within `out/`. The remote launcher returns only `out/` from the VM.
-- `pack` accepts an **array** named `BUILD_ARTIFACT`. `layout: flat` requires one
+- `pack` accepts an **array** named `BUILD_ARTIFACTS`. `layout: flat` requires one
   artifact; `layout: platform` combines matrix outputs. `layout` is platform-owned.
   Each build artifact contains nonempty `out/` with regular files and optional safe
   relative symlinks. Packaging never executes source files.

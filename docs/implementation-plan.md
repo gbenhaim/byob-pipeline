@@ -16,7 +16,7 @@ generator's approach, localhost support, and a mixed-platform matrix example.
 - Each build consumes checkout's SOURCE_ARTIFACT and emits BUILD_ARTIFACT containing
   only out/ and platform metadata. A chained step also consumes preceding outputs
   through a `BUILD_ARTIFACTS` array, defaulting to `[]`. Only pack publishes IMAGE_URL
-  and IMAGE_DIGEST. pack accepts an array of build artifacts, with flat or platform
+  and IMAGE_DIGEST. pack accepts a `BUILD_ARTIFACTS` array, with flat or platform
   layout.
 - Matrix results carry their platform inside the trusted exported build artifact;
   packaging never assumes ordering of parallel TaskRun results.

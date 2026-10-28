@@ -9,7 +9,7 @@ metadata:
 spec:
   description: Pack one or several build outputs into an OCI artifact and attach its SPDX SBOM.
   params:
-  - name: BUILD_ARTIFACT
+  - name: BUILD_ARTIFACTS
     type: array
     description: Build output Trusted Artifacts containing out/ and optional platform metadata.
   - name: IMAGE
@@ -71,7 +71,7 @@ spec:
           index=$((index + 1))
       done
     args:
-    - $(params.BUILD_ARTIFACT[*])
+    - $(params.BUILD_ARTIFACTS[*])
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json

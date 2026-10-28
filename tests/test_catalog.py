@@ -91,7 +91,7 @@ class CatalogTests(unittest.TestCase):
         tasks = {t["name"]: t for t in spec["tasks"]}
         self.assertEqual(tasks["build"]["matrix"]["params"][0]["name"], "PLATFORM")
         params = {p["name"]: p["value"] for p in tasks["pack"]["params"]}
-        self.assertEqual(params["BUILD_ARTIFACT"], ["$(tasks.build.results.BUILD_ARTIFACT[*])"])
+        self.assertEqual(params["BUILD_ARTIFACTS"], ["$(tasks.build.results.BUILD_ARTIFACT[*])"])
         self.assertEqual(params["layout"], "platform")
         self.assertEqual({p["name"] for p in spec["params"]}, {"git-url", "revision", "output-image", "oci-storage"})
         self.assertFalse(spec.get("workspaces"))
