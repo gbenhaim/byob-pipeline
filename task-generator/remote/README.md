@@ -21,7 +21,8 @@ BYOB's build image is untrusted, so the generated Task has three distinct steps:
 
 The generator also wires platform metadata and the remote builder input result.
 The local Task's private output staging volume and `BUILD_ARTIFACT` export are
-retained. Both local and remote scripts read preceding outputs at `BUILD_INPUTS/out/`.
+retained. Both local and remote scripts read the `BUILD_ARTIFACTS` array inputs at
+`$BUILD_INPUTS/<index>/out/`, starting at index zero.
 It intentionally omits upstream Buildah-specific image tagging, GPU flags,
 automatic credential forwarding, and shared-volume assumptions.
 

@@ -21,10 +21,10 @@ spec:
   - name: SOURCE_ARTIFACT
     type: string
     description: Original checkout Trusted Artifact, restored independently for every build.
-  - name: BUILD_ARTIFACT
-    type: string
-    description: Optional preceding build output, restored under BUILD_INPUTS.
-    default: ''
+  - name: BUILD_ARTIFACTS
+    type: array
+    description: Preceding build outputs, restored under BUILD_INPUTS/<index>/out/ in array order.
+    default: []
   - name: ociStorage
     type: string
     description: Platform-owned OCI repository (without a tag) for handoffs.
@@ -77,19 +77,23 @@ spec:
       value: /var/run/byob-registry-auth/config.json
   - name: restore-inputs
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+    args:
+    - $(params.BUILD_ARTIFACTS[*])
     script: |
       #!/bin/bash
       set -euo pipefail
       mkdir -p /var/workdir/inputs
-      if [[ -n "$BUILD_ARTIFACT" ]]; then
-          [[ "$BUILD_ARTIFACT" =~ ^oci:.+@sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid build artifact reference' >&2; exit 1; }
-          /usr/local/bin/use-archive "$BUILD_ARTIFACT=/var/workdir/inputs"
-      fi
+      index=0
+      for artifact in "$@"; do
+          [[ "$artifact" =~ ^oci:.+@sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid build artifact reference' >&2; exit 1; }
+          destination="/var/workdir/inputs/$index"
+          mkdir -p "$destination"
+          /usr/local/bin/use-archive "$artifact=$destination"
+          index=$((index + 1))
+      done
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
-    - name: BUILD_ARTIFACT
-      value: $(params.BUILD_ARTIFACT)
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir

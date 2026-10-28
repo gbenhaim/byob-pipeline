@@ -31,11 +31,13 @@ build artifact after the build. All matrix builds must succeed before packaging.
   containing only `out/`, plus platform metadata for matrix builds. The source
   tree, build scripts, and caches outside `out/` are never re-exported.
   `run-build-remote` additionally takes `PLATFORM`.
-- A chained step restores the original `SOURCE_ARTIFACT` and takes its
-  predecessor's `BUILD_ARTIFACT` as a separate optional input. Previous outputs
-  are available at `$BUILD_INPUTS/out/` (`/var/workdir/inputs/out/`) on local and
-  remote builders. Each step writes its own deliverables to `out/`; it must copy
-  any preceding outputs it wants to retain. The chained example demonstrates this.
+- A chained step restores the original `SOURCE_ARTIFACT` and accepts preceding
+  outputs through the optional `BUILD_ARTIFACTS` array (default: `[]`). Each input
+  is restored separately at `$BUILD_INPUTS/<index>/out/` in array order, starting
+  at zero, on local and remote builders. For example, the first input is at
+  `/var/workdir/inputs/0/out/`. Each step writes its own deliverables to `out/`;
+  it must copy any preceding outputs it wants to retain. The chained example
+  demonstrates this. The output result remains the string `BUILD_ARTIFACT`.
 - The script path is relative to the source root, executable, and has a shebang.
   Images must provide `/bin/sh` and the script's interpreter. The image entrypoint
   is bypassed. Scripts run as UID 1000/GID 0 with dropped capabilities and no
@@ -169,8 +171,9 @@ Admission, release policy, signing, and controller deployment are outside this r
   platform manifest digests may differ; policy must verify their relationship.
 - The future Conforma policy must allow the actual checkout identity
   `git-clone-oci-ta`, the two BYOB Tasks, and `pack`, verify artifact chains including
-  checkout's `SOURCE_ARTIFACT`, chained `BUILD_ARTIFACT`, and pack's array inputs,
-  and require ADR-55 Source VSA evidence. Admission must enforce the
+  checkout's `SOURCE_ARTIFACT`, chained `BUILD_ARTIFACTS` inputs and `BUILD_ARTIFACT`
+  results, and pack's array inputs, and require ADR-55 Source VSA evidence.
+  Admission must enforce the
   reviewed literals and reject inline Tasks and execution overrides. New bundles
   require the normal signing/review process before that policy can trust them.
 

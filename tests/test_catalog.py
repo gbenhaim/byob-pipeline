@@ -113,7 +113,15 @@ class CatalogTests(unittest.TestCase):
         tasks = {t["name"]: t for t in spec["tasks"]}
         params = {p["name"]: p["value"] for p in tasks["build"]["params"]}
         self.assertEqual(params["SOURCE_ARTIFACT"], "$(tasks.checkout.results.SOURCE_ARTIFACT)")
-        self.assertEqual(params["BUILD_ARTIFACT"], "$(tasks.codegen.results.BUILD_ARTIFACT)")
+        self.assertEqual(params["BUILD_ARTIFACTS"], ["$(tasks.codegen.results.BUILD_ARTIFACT)"])
+        for name in ("run-build", "run-build-remote"):
+            spec = self.task(name)["spec"]
+            inputs = {p["name"]: p for p in spec["params"]}
+            self.assertNotIn("BUILD_ARTIFACT", inputs)
+            self.assertEqual(inputs["BUILD_ARTIFACTS"]["type"], "array")
+            self.assertEqual(inputs["BUILD_ARTIFACTS"]["default"], [])
+            restore = next(s for s in spec["steps"] if s["name"] == "restore-inputs")
+            self.assertEqual(restore["args"], ["$(params.BUILD_ARTIFACTS[*])"])
 
 
 if __name__ == "__main__":

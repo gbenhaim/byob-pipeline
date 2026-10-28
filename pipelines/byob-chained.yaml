@@ -70,8 +70,9 @@ spec:
       value: $(tasks.checkout.results.SOURCE_ARTIFACT)
     - name: ociStorage
       value: $(params.oci-storage)
-    - name: BUILD_ARTIFACT
-      value: $(tasks.codegen.results.BUILD_ARTIFACT)
+    - name: BUILD_ARTIFACTS
+      value:
+      - $(tasks.codegen.results.BUILD_ARTIFACT)
   - name: pack
     taskRef:
       name: pack

@@ -14,9 +14,10 @@ generator's approach, localhost support, and a mixed-platform matrix example.
 - Remote execution uses rootless Podman, with copied source rather than host bind
   mounts. The controller owns remote VM lifetime. localhost uses the local step.
 - Each build consumes checkout's SOURCE_ARTIFACT and emits BUILD_ARTIFACT containing
-  only out/ and platform metadata. A chained step also consumes its predecessor's
-  BUILD_ARTIFACT. Only pack publishes IMAGE_URL and IMAGE_DIGEST. pack accepts an
-  array of build artifacts, with flat or platform layout.
+  only out/ and platform metadata. A chained step also consumes preceding outputs
+  through a `BUILD_ARTIFACTS` array, defaulting to `[]`. Only pack publishes IMAGE_URL
+  and IMAGE_DIGEST. pack accepts an array of build artifacts, with flat or platform
+  layout.
 - Matrix results carry their platform inside the trusted exported build artifact;
   packaging never assumes ordering of parallel TaskRun results.
 - Admission, Conforma, Source VSA, signing, isolated credential delivery, and
@@ -61,7 +62,8 @@ and documented `tkn`/`kubectl` commands. Runtime behavior stays the same.
 
 The user explicitly requested output-only intermediate uploads. This overrides
 the ADR's full-source-tree handoff: every build restores the original checkout,
-and an optional BUILD_ARTIFACT restores preceding outputs at BUILD_INPUTS/out/.
+and an optional `BUILD_ARTIFACTS` array restores preceding outputs separately at
+`BUILD_INPUTS/<index>/out/` in array order, starting at zero.
 The existing source checkout artifact remains necessary to distribute reviewed
 source; run-build never republishes it.
 

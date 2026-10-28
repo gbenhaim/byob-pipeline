@@ -18,8 +18,10 @@ class RemoteTests(unittest.TestCase):
             (root / "source/out/same-link").symlink_to("./output.txt")
             (root / "source/out/sub").mkdir()
             (root / "source/out/sub/parent-link").symlink_to("../output.txt")
-            (root / "inputs/out").mkdir(parents=True)
-            (root / "inputs/out/generated.txt").write_text("preceding build output")
+            for index, content in enumerate(("first build output", "second build output")):
+                output = root / "inputs" / str(index) / "out"
+                output.mkdir(parents=True)
+                (output / "generated.txt").write_text(content)
             bin_dir = root / "bin"
             bin_dir.mkdir()
             podman = bin_dir / "podman"
@@ -46,7 +48,8 @@ esac
             self.assertEqual(os.readlink(root / "output/out/same-link"), "./output.txt")
             self.assertEqual(os.readlink(root / "output/out/sub/parent-link"), "../output.txt")
             self.assertEqual(sorted(p.name for p in (root / "output").iterdir()), ["out"])
-            self.assertEqual((root / "received/var/workdir/inputs/out/generated.txt").read_text(), "preceding build output")
+            self.assertEqual((root / "received/var/workdir/inputs/0/out/generated.txt").read_text(), "first build output")
+            self.assertEqual((root / "received/var/workdir/inputs/1/out/generated.txt").read_text(), "second build output")
 
     def test_supplied_known_hosts_uses_strict_verification(self):
         script = step("run-build-remote", "build-remote")["script"].split("remote()", 1)[0]
