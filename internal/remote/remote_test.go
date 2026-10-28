@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -26,6 +28,7 @@ import (
 const requestedImage = "registry.example:5000/builder@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const observedImage = "registry.example:5000/builder@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
+// TestSelectPlatform verifies controller host selection without requiring local SSH credentials.
 func TestSelectPlatform(t *testing.T) {
 	for _, tt := range []struct{ name, host, mode string }{
 		{"localhost needs no key", "localhost\n", "local"},
@@ -43,6 +46,7 @@ func TestSelectPlatform(t *testing.T) {
 	}
 }
 
+// TestSelectPlatformRejectsControllerErrorsAndMissingHost verifies that incomplete or failed allocation never selects a platform.
 func TestSelectPlatformRejectsControllerErrorsAndMissingHost(t *testing.T) {
 	for _, tt := range []struct{ name, host, controllerError string }{
 		{"empty host", "\n", ""},
@@ -70,6 +74,7 @@ func TestSelectPlatformRejectsControllerErrorsAndMissingHost(t *testing.T) {
 	}
 }
 
+// TestRecordImage checks provenance from the requested local image or the observed remote digest.
 func TestRecordImage(t *testing.T) {
 	for _, mode := range []string{"local", "remote"} {
 		t.Run(mode, func(t *testing.T) {
@@ -94,6 +99,7 @@ func TestRecordImage(t *testing.T) {
 	}
 }
 
+// TestRecordImageRejectsMutableOrMalformedImage prevents recording mutable references or missing remote metadata.
 func TestRecordImageRejectsMutableOrMalformedImage(t *testing.T) {
 	for _, image := range []string{"builder:latest", "builder@sha256:abc", "@sha256:" + strings.Repeat("a", 64), "builder@sha256:" + strings.Repeat("A", 64)} {
 		root := t.TempDir()
@@ -109,6 +115,7 @@ func TestRecordImageRejectsMutableOrMalformedImage(t *testing.T) {
 	}
 }
 
+// TestBuildReturnsOnlyOutputsAndPreservesLinksAndIndexedInputs verifies output isolation, input indexing, and link-preserving transfer.
 func TestBuildReturnsOnlyOutputsAndPreservesLinksAndIndexedInputs(t *testing.T) {
 	f := newBuildFixture(t)
 	write(t, filepath.Join(f.options.SourceRoot, "out", "stale.txt"), "previous output")
@@ -136,6 +143,7 @@ func TestBuildReturnsOnlyOutputsAndPreservesLinksAndIndexedInputs(t *testing.T) 
 	f.assertCleaned(t, true)
 }
 
+// TestBuildUsesStrictKnownHostsAndPrivateKey checks that OpenSSH receives private credentials and controller host verification.
 func TestBuildUsesStrictKnownHostsAndPrivateKey(t *testing.T) {
 	f := newBuildFixture(t)
 	write(t, filepath.Join(f.options.SSHDir, "known_hosts"), "fixture.invalid ssh-ed25519 fixture\n")
@@ -154,6 +162,7 @@ func TestBuildUsesStrictKnownHostsAndPrivateKey(t *testing.T) {
 	f.assertCleaned(t, true)
 }
 
+// TestBuildReturnsOutputAcrossSeparateControlAndSourceFilesystems verifies that output staging avoids cross-device renames.
 func TestBuildReturnsOutputAcrossSeparateControlAndSourceFilesystems(t *testing.T) {
 	f := newBuildFixture(t)
 	var controlStat, alternateStat syscall.Stat_t
@@ -179,19 +188,104 @@ func TestBuildReturnsOutputAcrossSeparateControlAndSourceFilesystems(t *testing.
 	f.assertCleaned(t, true)
 }
 
-func TestBuildQuotesScriptAsOneArgument(t *testing.T) {
+// TestBuildPreservesCommandArguments verifies that SSH quoting and the Podman entrypoint retain every argv element.
+func TestBuildPreservesCommandArguments(t *testing.T) {
+	for _, tt := range []struct{ name, executable string }{
+		{"space in executable", "/usr/bin/native build"},
+		{"quotes in executable", `./literal['"executable`},
+		{"JSON in executable", `["not", "an entrypoint array"]`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newBuildFixture(t)
+			injection := "'; touch " + filepath.Join(f.root, "injected") + "; #\n$(touch " + filepath.Join(f.root, "injected") + ")"
+			f.options.BuildCmd = []string{tt.executable, "", "two words", "single'quote", `double"quote`, "line one\nline two", "--leading-dash", "&&", injection}
+			if err := Build(context.Background(), f.options); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.containerCommand(t); !slices.Equal(got, f.options.BuildCmd) {
+				t.Errorf("container command = %q, want %q", got, f.options.BuildCmd)
+			}
+			assertMissing(t, filepath.Join(f.root, "injected"))
+		})
+	}
+}
+
+// TestBuildUsesExecutableEntrypoint verifies a direct command configuration without a container shell or extra arguments.
+func TestBuildUsesExecutableEntrypoint(t *testing.T) {
 	f := newBuildFixture(t)
-	f.options.ScriptPath = "build'; touch " + filepath.Join(f.root, "injected") + "; #\n$(touch " + filepath.Join(f.root, "injected") + ")"
+	f.options.BuildCmd = []string{"/usr/bin/native-build"}
 	if err := Build(context.Background(), f.options); err != nil {
 		t.Fatal(err)
 	}
-	args := bytes.Split(bytes.TrimSuffix(read(t, filepath.Join(f.root, "create-args")), []byte{0}), []byte{0})
-	if string(args[len(args)-1]) != f.options.ScriptPath {
-		t.Fatalf("script was not passed intact: %q", args[len(args)-1])
+	if got := f.containerCommand(t); !slices.Equal(got, []string{"/usr/bin/native-build"}) {
+		t.Errorf("container command = %q, want the native executable without arguments", got)
 	}
-	assertMissing(t, filepath.Join(f.root, "injected"))
 }
 
+// TestBuildRejectsEmptyCommandBeforeSSH prevents invalid argv from transferring source or starting a remote build.
+func TestBuildRejectsEmptyCommandBeforeSSH(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		command []string
+	}{
+		{"nil argv", nil},
+		{"empty argv", []string{}},
+		{"empty executable", []string{""}},
+		{"empty executable with args", []string{"", "argument"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newBuildFixture(t)
+			f.options.BuildCmd = tt.command
+			if err := Build(context.Background(), f.options); err == nil || !strings.Contains(err.Error(), "build command") {
+				t.Fatalf("expected an empty build command error, got %v", err)
+			}
+			assertMissing(t, filepath.Join(f.root, "ssh-config"))
+			f.assertCleaned(t, false)
+		})
+	}
+}
+
+// TestBuildPreparesPrivateHome verifies that HOME exists with the developer identity before the container starts.
+func TestBuildPreparesPrivateHome(t *testing.T) {
+	f := newBuildFixture(t)
+	if err := Build(context.Background(), f.options); err != nil {
+		t.Fatal(err)
+	}
+	archives, err := filepath.Glob(filepath.Join(f.root, "copied-archive.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundHome := false
+	for _, archive := range archives {
+		reader := tar.NewReader(bytes.NewReader(read(t, archive)))
+		for {
+			header, err := reader.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if header.Name != "var/workdir/home/" {
+				continue
+			}
+			foundHome = true
+			if header.Typeflag != tar.TypeDir || header.Mode != 0o700 || header.Uid != 1000 || header.Gid != 0 {
+				t.Errorf("HOME archive header = %+v, want a directory with uid=1000 gid=0 mode=0700", header)
+			}
+		}
+	}
+	if !foundHome {
+		t.Fatal("worker did not provide a HOME directory")
+	}
+	assertFile(t, filepath.Join(f.root, "home-before-start"), "")
+	entries, err := os.ReadDir(filepath.Join(f.root, "received", "var", "workdir", "home"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("initial HOME is not an empty directory: %v, %v", entries, err)
+	}
+}
+
+// TestBuildRejectsUnsafeControllerDataBeforeSSH prevents controller metadata from becoming shell commands or SSH options.
 func TestBuildRejectsUnsafeControllerDataBeforeSSH(t *testing.T) {
 	for _, tt := range []struct{ name, file, value string }{
 		{"host option", "host", "-oProxyCommand=touch /tmp/injected"},
@@ -212,8 +306,9 @@ func TestBuildRejectsUnsafeControllerDataBeforeSSH(t *testing.T) {
 	}
 }
 
+// TestBuildFailureCleansUpAndKeepsLocalSource verifies failure cleanup without replacing local checkout or prior outputs.
 func TestBuildFailureCleansUpAndKeepsLocalSource(t *testing.T) {
-	for _, mode := range []string{"start-failure", "container-failure", "symlink-out", "missing-out", "not-rootless", "bad-digest", "return-failure"} {
+	for _, mode := range []string{"start-failure", "container-failure", "home-copy-failure", "symlink-out", "missing-out", "not-rootless", "bad-digest", "return-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newBuildFixture(t)
 			t.Setenv("FIXTURE_MODE", mode)
@@ -228,12 +323,14 @@ func TestBuildFailureCleansUpAndKeepsLocalSource(t *testing.T) {
 	}
 }
 
+// TestBuildCancellationCleansRemoteContainerAndCredentials exercises cancellation both during creation and attached execution.
 func TestBuildCancellationCleansRemoteContainerAndCredentials(t *testing.T) {
 	for _, mode := range []string{"wait", "create-wait"} {
 		t.Run(mode, func(t *testing.T) { testBuildCancellation(t, mode) })
 	}
 }
 
+// testBuildCancellation cancels a fixture after its blocking operation starts and checks bounded cleanup.
 func testBuildCancellation(t *testing.T, mode string) {
 	t.Helper()
 	f := newBuildFixture(t)
@@ -272,6 +369,7 @@ func testBuildCancellation(t *testing.T, mode string) {
 	f.assertCleaned(t, true)
 }
 
+// TestBuildExchangesOTPUsingControllerCA verifies the opaque OTP request and use of the returned SSH key.
 func TestBuildExchangesOTPUsingControllerCA(t *testing.T) {
 	f := newBuildFixture(t)
 	var gotBody, gotMethod string
@@ -297,6 +395,7 @@ func TestBuildExchangesOTPUsingControllerCA(t *testing.T) {
 	f.assertCleaned(t, true)
 }
 
+// TestBuildRejectsFailedOTPExchangeWithoutStartingSSH checks HTTPS, trust, redirect, and credential-redaction safeguards.
 func TestBuildRejectsFailedOTPExchangeWithoutStartingSSH(t *testing.T) {
 	for _, mode := range []string{"untrusted-ca", "http-error", "plaintext", "redirect"} {
 		t.Run(mode, func(t *testing.T) {
@@ -347,13 +446,14 @@ type buildFixture struct {
 	options BuildOptions
 }
 
+// newBuildFixture prepares source, indexed inputs, credentials, and local stand-ins for SSH and Podman.
 func newBuildFixture(t *testing.T) buildFixture {
 	t.Helper()
 	root := t.TempDir()
 	f := buildFixture{root: root, options: BuildOptions{
 		SSHDir: filepath.Join(root, "ssh"), SourceRoot: filepath.Join(root, "source with space"),
 		InputRoot: filepath.Join(root, "inputs"), ControlRoot: filepath.Join(root, "control"),
-		BuilderImage: requestedImage, ScriptPath: "build.sh", Stdout: io.Discard, Stderr: io.Discard,
+		BuilderImage: requestedImage, BuildCmd: []string{"./build.sh"}, Stdout: io.Discard, Stderr: io.Discard,
 	}}
 	for _, name := range []string{"ssh", "source with space", "inputs", "remote", "private", "bin"} {
 		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
@@ -389,6 +489,32 @@ func newBuildFixture(t *testing.T) buildFixture {
 	return f
 }
 
+// containerCommand reads the command emitted at the Podman boundary, requiring a literal single-executable entrypoint.
+func (f buildFixture) containerCommand(t *testing.T) []string {
+	t.Helper()
+	args := strings.Split(strings.TrimSuffix(string(read(t, filepath.Join(f.root, "create-args"))), "\x00"), "\x00")
+	var entrypoint []string
+	for index, argument := range args {
+		if argument == "--entrypoint" && index+1 < len(args) {
+			if err := json.Unmarshal([]byte(args[index+1]), &entrypoint); err != nil {
+				t.Fatalf("entrypoint is not a JSON array: %q: %v", args[index+1], err)
+			}
+			if len(entrypoint) != 1 {
+				t.Fatalf("entrypoint must contain only the executable: %q", entrypoint)
+			}
+		}
+		if argument == requestedImage {
+			if len(entrypoint) == 0 {
+				t.Fatal("container did not receive an explicit executable entrypoint")
+			}
+			return append(entrypoint, args[index+1:]...)
+		}
+	}
+	t.Fatal("container create omitted the requested image")
+	return nil
+}
+
+// assertCleaned checks that remote workspaces, private keys, temporary outputs, and any container were removed.
 func (f buildFixture) assertCleaned(t *testing.T, container bool) {
 	t.Helper()
 	for _, directory := range []string{"remote", "private"} {
@@ -420,6 +546,7 @@ func (f buildFixture) assertCleaned(t *testing.T, container bool) {
 	}
 }
 
+// write creates a private fixture file together with its parent directories.
 func write(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -430,6 +557,7 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
+// read loads a fixture file and fails the current test if it is unavailable.
 func read(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -439,6 +567,7 @@ func read(t *testing.T, path string) []byte {
 	return data
 }
 
+// assertFile checks the exact contents of a fixture output file.
 func assertFile(t *testing.T, path, want string) {
 	t.Helper()
 	if got := string(read(t, path)); got != want {
@@ -446,6 +575,7 @@ func assertFile(t *testing.T, path, want string) {
 	}
 }
 
+// assertMissing checks that neither a regular path nor a dangling symlink exists.
 func assertMissing(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -495,12 +625,16 @@ case "$1" in
  cp)
    if [[ $2 == - ]]; then
        mkdir -p "$FIXTURE_ROOT/received"
-       tar -xf - -C "$FIXTURE_ROOT/received"
+       archive=$(mktemp "$FIXTURE_ROOT/copied-archive.XXXXXXXX")
+       cat > "$archive"
+       tar -xf "$archive" -C "$FIXTURE_ROOT/received"
+       if [[ $FIXTURE_MODE == home-copy-failure && -d $FIXTURE_ROOT/received/var/workdir/home ]]; then exit 43; fi
    else
        cp -a "$FIXTURE_ROOT/received${2#fixture-container:}" "$3"
    fi ;;
  start)
    cat >/dev/null
+   if [[ -d $FIXTURE_ROOT/received/var/workdir/home ]]; then touch "$FIXTURE_ROOT/home-before-start"; fi
    if [[ $FIXTURE_MODE == start-failure ]]; then exit 42; fi
    if [[ $FIXTURE_MODE == wait ]]; then touch "$FIXTURE_ROOT/started"; sleep 60; fi
    source=$FIXTURE_ROOT/received/var/workdir/source

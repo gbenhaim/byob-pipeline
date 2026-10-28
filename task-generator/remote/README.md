@@ -14,11 +14,15 @@ BYOB's build image is untrusted, so the generated Task has three distinct steps:
 
 1. A trusted selector reads the controller's `host` and emits `local` or `remote`.
 2. The original developer-image step runs only for `localhost`, without the SSH
-   Secret or registry-auth volume.
+   Secret or registry-auth volume. Its static launcher is mounted read-only.
 3. A trusted SSH step runs only for a remote host, using rootless Podman and
    `podman cp` to transfer the original source and preceding build outputs. It
    returns only `out/`, preserving the local checkout. It has no privileged or
    host-volume option.
+
+Both paths consume the `build-cmd` argument array. The VM worker sets Podman's
+entrypoint to the executable and passes the remaining arguments directly, without
+requiring a shell in the developer image.
 
 The generator also wires platform metadata and the remote builder input result.
 Selection, SSH/OTP orchestration, and image recording live in `internal/remote`.

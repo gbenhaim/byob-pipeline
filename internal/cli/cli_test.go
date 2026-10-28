@@ -11,6 +11,7 @@ import (
 	"testing"
 )
 
+// fixtureCommand installs a disposable helper executable at the front of PATH.
 func fixtureCommand(t *testing.T, name, script string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -19,6 +20,8 @@ func fixtureCommand(t *testing.T, name, script string) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+// runCLI invokes the public CLI and includes captured output when it fails.
 func runCLI(t *testing.T, args ...string) error {
 	t.Helper()
 	var output bytes.Buffer
@@ -28,6 +31,9 @@ func runCLI(t *testing.T, args ...string) error {
 	}
 	return err
 }
+
+// TestRestoreInputs covers reference validation, indexed restoration, empty
+// optional inputs, and stopping after a failed artifact restore.
 func TestRestoreInputs(t *testing.T) {
 	ref := "oci:registry.example/build@sha256:" + strings.Repeat("a", 64)
 	t.Run("empty", func(t *testing.T) {
@@ -80,6 +86,9 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 		}
 	})
 }
+
+// TestPublish verifies successful publication results and ensures failed pushes,
+// attachments, or invalid digests cannot produce trusted result files.
 func TestPublish(t *testing.T) {
 	for _, scenario := range []string{"success", "push failure", "attachment failure", "invalid digest"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -131,6 +140,9 @@ func TestPublish(t *testing.T) {
 		})
 	}
 }
+
+// TestInvalidCommandAndArguments rejects invalid invocations and keeps general
+// help available without executing a Task operation.
 func TestInvalidCommandAndArguments(t *testing.T) {
 	for _, args := range [][]string{nil, {"unknown"}, {"prepare", "--unknown"}, {"prepare", "unexpected"}, {"publish"}} {
 		if err := runCLI(t, args...); err == nil {

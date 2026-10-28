@@ -1,92 +1,193 @@
-// Package cli implements the small, PoC-only trusted Task command line.
+// Package cli implements the trusted Task command line.
 package cli
 
 import (
 	"context"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 
 	"github.com/gbenhaim/byob-pipeline/internal/artifact"
+	"github.com/gbenhaim/byob-pipeline/internal/launcher"
 	"github.com/gbenhaim/byob-pipeline/internal/remote"
+	"github.com/spf13/cobra"
 )
 
-// Run executes one Task operation. Parameters are data, never shell source.
+// Run executes one Task operation with a fresh command tree and flag state.
+// Developer command arguments are passed as argv, never interpreted as shell code.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("a subcommand is required (use --help)")
+	root := &cobra.Command{
+		Use:           "byob",
+		Short:         "Run trusted build preparation, artifact, and remote operations",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		Args:          cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return fmt.Errorf("a subcommand is required (use --help)")
+		},
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
-	if args[0] == "--help" || args[0] == "help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stdout, "Usage: byob <command> [options]\nCommands: prepare, stage-output, restore-inputs, pack, publish, select-platform, record-image, build-remote")
-		return err
-	}
-	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	var run func() error
-	allowArgs := false
-	switch args[0] {
-	case "prepare":
-		source := fs.String("source", "/var/workdir/source", "restored source directory")
-		script := fs.String("script", "build.sh", "executable path relative to source")
-		run = func() error { return artifact.Prepare(*source, *script) }
-	case "stage-output":
-		source := fs.String("source", "/var/workdir/source", "build source directory")
-		output := fs.String("output", "/var/build-output", "private output staging directory")
-		platform := fs.String("platform", "", "trusted platform metadata")
-		run = func() error { return artifact.StageOutput(*source, *output, *platform) }
-	case "restore-inputs":
-		root := fs.String("root", "/var/workdir/inputs", "input restoration directory")
-		required := fs.Bool("require", false, "require at least one artifact")
-		allowArgs = true
-		run = func() error { return restoreInputs(ctx, *root, fs.Args(), *required, stdout, stderr) }
-	case "pack":
-		input := fs.String("inputs", "/var/workdir/inputs", "indexed artifact directories")
-		output := fs.String("package", "/var/workdir/package", "staged deliverables directory")
-		archive := fs.String("archive", "/var/workdir/payload.tar.gz", "archive filename")
-		layout := fs.String("layout", "flat", "flat or platform")
-		run = func() error { return artifact.Pack(*input, *output, *archive, *layout) }
-	case "publish":
-		var opts publishOptions
-		fs.StringVar(&opts.Image, "image", "", "tagged output image")
-		fs.StringVar(&opts.ArtifactType, "artifact-type", "application/vnd.konflux.build-output.v1", "OCI artifact type")
-		fs.StringVar(&opts.Workdir, "workdir", "/var/workdir", "payload and SBOM directory")
-		fs.StringVar(&opts.AuthDir, "auth-dir", "/var/run/byob-registry-auth", "registry authentication directory")
-		fs.StringVar(&opts.URLResult, "url-result", "", "IMAGE_URL result file")
-		fs.StringVar(&opts.DigestResult, "digest-result", "", "IMAGE_DIGEST result file")
-		fs.StringVar(&opts.SBOMResult, "sbom-result", "", "SBOM_BLOB_URL result file")
-		fs.BoolVar(&opts.PlainHTTP, "plain-http", false, "use HTTP for a disposable test registry")
-		run = func() error { return publish(ctx, opts, stdout, stderr) }
-	case "select-platform":
-		sshDir := fs.String("ssh-dir", "/ssh", "controller Secret directory")
-		result := fs.String("result", "", "MODE result file")
-		run = func() error { return remote.SelectPlatform(*sshDir, *result) }
-	case "record-image":
-		mode := fs.String("mode", "", "local or remote execution")
-		image := fs.String("image", "", "requested builder image")
-		control := fs.String("control", "/var/workdir/control", "trusted control directory")
-		result := fs.String("result", "", "BUILD_IMAGE_ARTIFACT_INPUTS result file")
-		run = func() error { return remote.RecordImage(*mode, *image, *control, *result) }
-	case "build-remote":
-		opts := remote.BuildOptions{Stdout: stdout, Stderr: stderr}
-		fs.StringVar(&opts.SSHDir, "ssh-dir", "/ssh", "controller Secret directory")
-		fs.StringVar(&opts.SourceRoot, "source", "/var/workdir/source", "source directory")
-		fs.StringVar(&opts.InputRoot, "inputs", "/var/workdir/inputs", "indexed inputs directory")
-		fs.StringVar(&opts.ControlRoot, "control", "/var/workdir/control", "trusted control directory")
-		fs.StringVar(&opts.BuilderImage, "image", "", "digest-pinned developer image")
-		fs.StringVar(&opts.ScriptPath, "script", "build.sh", "executable path relative to source")
-		run = func() error { return remote.Build(ctx, opts) }
-	default:
-		return fmt.Errorf("unknown command %q", args[0])
-	}
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+	root.SetArgs(append([]string{}, args...))
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.AddCommand(
+		newPrepareCommand(), newExecBuildCommand(), newStageOutputCommand(),
+		newRestoreInputsCommand(), newPackCommand(), newPublishCommand(),
+		newSelectPlatformCommand(), newRecordImageCommand(), newRemoteBuildCommand(),
+	)
+	return root.ExecuteContext(ctx)
+}
+
+// newPrepareCommand validates restored source and optionally stages a launcher
+// in a trusted volume separate from the developer checkout.
+func newPrepareCommand() *cobra.Command {
+	var source, tools string
+	command := &cobra.Command{
+		Use: "prepare", Short: "Validate restored source and optionally stage the build launcher", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			if err := artifact.Prepare(source); err != nil {
+				return err
+			}
+			if tools != "" {
+				return launcher.Install(tools)
+			}
 			return nil
-		}
-		return err
+		},
 	}
-	if !allowArgs && fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments for %s: %v", args[0], fs.Args())
+	command.Flags().StringVar(&source, "source", "/var/workdir/source", "restored source directory")
+	command.Flags().StringVar(&tools, "tools", "", "trusted directory in which to install the build launcher")
+	return command
+}
+
+// newExecBuildCommand configures the developer environment before replacing the
+// launcher process with the requested executable and its unmodified arguments.
+func newExecBuildCommand() *cobra.Command {
+	var source, home string
+	command := &cobra.Command{
+		Use: "exec-build [flags] -- COMMAND [ARG...]", Short: "Execute a build command directly, without a shell", Args: requireBuildCommand,
+		RunE: func(_ *cobra.Command, args []string) error { return launcher.Exec(source, home, args) },
 	}
-	return run()
+	command.Flags().StringVar(&source, "source", "/var/workdir/source", "restored source working directory")
+	command.Flags().StringVar(&home, "home", "/var/workdir/home", "build home directory to create")
+	return command
+}
+
+// newStageOutputCommand copies validated build outputs to the trusted export tree.
+func newStageOutputCommand() *cobra.Command {
+	var source, output, platform string
+	command := &cobra.Command{
+		Use: "stage-output", Short: "Stage validated build outputs for export", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error { return artifact.StageOutput(source, output, platform) },
+	}
+	command.Flags().StringVar(&source, "source", "/var/workdir/source", "build source directory")
+	command.Flags().StringVar(&output, "output", "/var/build-output", "private output staging directory")
+	command.Flags().StringVar(&platform, "platform", "", "trusted platform metadata")
+	return command
+}
+
+// newRestoreInputsCommand restores each supplied artifact to an indexed directory.
+func newRestoreInputsCommand() *cobra.Command {
+	var root string
+	var required bool
+	command := &cobra.Command{
+		Use: "restore-inputs [flags] -- [ARTIFACT...]", Short: "Restore artifact inputs into separate indexed directories",
+		RunE: func(command *cobra.Command, args []string) error {
+			return restoreInputs(command.Context(), root, args, required, command.OutOrStdout(), command.ErrOrStderr())
+		},
+	}
+	command.Flags().StringVar(&root, "root", "/var/workdir/inputs", "input restoration directory")
+	command.Flags().BoolVar(&required, "require", false, "require at least one artifact")
+	return command
+}
+
+// newPackCommand assembles indexed outputs into a deterministic delivery archive.
+func newPackCommand() *cobra.Command {
+	var inputs, output, archive, layout string
+	command := &cobra.Command{
+		Use: "pack", Short: "Package validated artifact outputs", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error { return artifact.Pack(inputs, output, archive, layout) },
+	}
+	command.Flags().StringVar(&inputs, "inputs", "/var/workdir/inputs", "indexed artifact directories")
+	command.Flags().StringVar(&output, "package", "/var/workdir/package", "staged deliverables directory")
+	command.Flags().StringVar(&archive, "archive", "/var/workdir/payload.tar.gz", "archive filename")
+	command.Flags().StringVar(&layout, "layout", "flat", "flat or platform")
+	return command
+}
+
+// newPublishCommand publishes the payload and its SBOM before writing results.
+func newPublishCommand() *cobra.Command {
+	var opts publishOptions
+	command := &cobra.Command{
+		Use: "publish", Short: "Publish the payload and attach its SBOM", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			return publish(command.Context(), opts, command.OutOrStdout(), command.ErrOrStderr())
+		},
+	}
+	command.Flags().StringVar(&opts.Image, "image", "", "tagged output image")
+	command.Flags().StringVar(&opts.ArtifactType, "artifact-type", "application/vnd.konflux.build-output.v1", "OCI artifact type")
+	command.Flags().StringVar(&opts.Workdir, "workdir", "/var/workdir", "payload and SBOM directory")
+	command.Flags().StringVar(&opts.AuthDir, "auth-dir", "/var/run/byob-registry-auth", "registry authentication directory")
+	command.Flags().StringVar(&opts.URLResult, "url-result", "", "IMAGE_URL result file")
+	command.Flags().StringVar(&opts.DigestResult, "digest-result", "", "IMAGE_DIGEST result file")
+	command.Flags().StringVar(&opts.SBOMResult, "sbom-result", "", "SBOM_BLOB_URL result file")
+	command.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "use HTTP for a disposable test registry")
+	return command
+}
+
+// newSelectPlatformCommand records whether the controller selected local or
+// remote execution for the requested platform.
+func newSelectPlatformCommand() *cobra.Command {
+	var sshDir, result string
+	command := &cobra.Command{
+		Use: "select-platform", Short: "Select local or remote execution from controller metadata", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error { return remote.SelectPlatform(sshDir, result) },
+	}
+	command.Flags().StringVar(&sshDir, "ssh-dir", "/ssh", "controller Secret directory")
+	command.Flags().StringVar(&result, "result", "", "MODE result file")
+	return command
+}
+
+// newRecordImageCommand writes trusted image metadata for the selected execution.
+func newRecordImageCommand() *cobra.Command {
+	var mode, image, control, result string
+	command := &cobra.Command{
+		Use: "record-image", Short: "Record the builder image used by this build", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error { return remote.RecordImage(mode, image, control, result) },
+	}
+	command.Flags().StringVar(&mode, "mode", "", "local or remote execution")
+	command.Flags().StringVar(&image, "image", "", "requested builder image")
+	command.Flags().StringVar(&control, "control", "/var/workdir/control", "trusted control directory")
+	command.Flags().StringVar(&result, "result", "", "BUILD_IMAGE_ARTIFACT_INPUTS result file")
+	return command
+}
+
+// newRemoteBuildCommand forwards the developer argv to the VM worker while
+// keeping controller credentials and build parameters in separate options.
+func newRemoteBuildCommand() *cobra.Command {
+	var opts remote.BuildOptions
+	command := &cobra.Command{
+		Use: "build-remote [flags] -- COMMAND [ARG...]", Short: "Run a build command on the controller's remote VM", Args: requireBuildCommand,
+		RunE: func(command *cobra.Command, args []string) error {
+			opts.BuildCmd = args
+			opts.Stdout, opts.Stderr = command.OutOrStdout(), command.ErrOrStderr()
+			return remote.Build(command.Context(), opts)
+		},
+	}
+	command.Flags().StringVar(&opts.SSHDir, "ssh-dir", "/ssh", "controller Secret directory")
+	command.Flags().StringVar(&opts.SourceRoot, "source", "/var/workdir/source", "source directory")
+	command.Flags().StringVar(&opts.InputRoot, "inputs", "/var/workdir/inputs", "indexed inputs directory")
+	command.Flags().StringVar(&opts.ControlRoot, "control", "/var/workdir/control", "trusted control directory")
+	command.Flags().StringVar(&opts.BuilderImage, "image", "", "digest-pinned developer image")
+	return command
+}
+
+// requireBuildCommand requires an explicit argv boundary so developer flags
+// cannot be mistaken for options controlling the trusted CLI.
+func requireBuildCommand(command *cobra.Command, args []string) error {
+	if len(args) == 0 || command.ArgsLenAtDash() != 0 {
+		return fmt.Errorf("a build command is required after --")
+	}
+	if args[0] == "" {
+		return fmt.Errorf("build command executable must not be empty")
+	}
+	return nil
 }

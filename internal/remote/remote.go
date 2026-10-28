@@ -79,10 +79,11 @@ func RecordImage(mode, image, controlRoot, resultPath string) error {
 }
 
 // BuildOptions identifies the controller credentials, source and indexed inputs,
-// and the immutable developer image and source-relative script to run.
+// and the immutable developer image and executable argv to run.
 type BuildOptions struct {
-	SSHDir, SourceRoot, InputRoot, ControlRoot, BuilderImage, ScriptPath string
-	Stdout, Stderr                                                       io.Writer
+	SSHDir, SourceRoot, InputRoot, ControlRoot, BuilderImage string
+	BuildCmd                                                 []string
+	Stdout, Stderr                                           io.Writer
 }
 
 // Build runs the developer container on the controller's VM and returns only its
@@ -95,6 +96,15 @@ func Build(ctx context.Context, options BuildOptions) (result error) {
 			result = errors.Join(result, ctx.Err())
 		}
 	}()
+	if len(options.BuildCmd) == 0 || options.BuildCmd[0] == "" {
+		return errors.New("build command must contain a non-empty executable")
+	}
+	// Podman parses --entrypoint as JSON when possible. An explicit one-element
+	// array preserves executable names that themselves resemble JSON or shell text.
+	entrypoint, err := json.Marshal(options.BuildCmd[:1])
+	if err != nil {
+		return fmt.Errorf("encode build executable: %w", err)
+	}
 	host, err := readValue(filepath.Join(options.SSHDir, "host"))
 	if err != nil {
 		return err
@@ -187,7 +197,10 @@ func Build(ctx context.Context, options BuildOptions) (result error) {
 			return fmt.Errorf("transfer %s: %w", transfer.local, err)
 		}
 	}
-	args := quote(directory) + " " + quote(options.BuilderImage) + " " + quote(options.ScriptPath)
+	args := quote(directory) + " " + quote(options.BuilderImage) + " " + quote(string(entrypoint))
+	for _, argument := range options.BuildCmd[1:] {
+		args += " " + quote(argument)
+	}
 	if err := session.run(ctx, "bash -s -- "+args, strings.NewReader(worker), stdout); err != nil {
 		return fmt.Errorf("remote build: %w", err)
 	}
@@ -231,11 +244,13 @@ func Build(ctx context.Context, options BuildOptions) (result error) {
 	return os.Rename(output, filepath.Join(options.SourceRoot, "out"))
 }
 
+// readValue reads controller metadata while removing trailing line-feed delimiters.
 func readValue(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	return strings.TrimRight(string(data), "\n"), err
 }
 
+// prepareKey privately copies the controller key or exchanges its OTP with the controller's HTTPS server.
 func prepareKey(ctx context.Context, sshDir, destination string) error {
 	otp, err := os.ReadFile(filepath.Join(sshDir, "otp"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -301,6 +316,7 @@ func quote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
+// cleanupCommand removes any recorded remote container before deleting its temporary workspace.
 func cleanupCommand(directory string) string {
 	return "if [ -s " + quote(directory+"/container-id") + " ]; then " +
 		"podman --default-mounts-file=/dev/null rm -f \"$(cat " + quote(directory+"/container-id") + ")\" >/dev/null; fi; " +
@@ -312,24 +328,28 @@ type sshSession struct {
 	stderr io.Writer
 }
 
+// command creates an SSH process with the session's fixed connection options and error stream.
 func (s sshSession) command(ctx context.Context, script string) *exec.Cmd {
 	cmd := command(ctx, "ssh", append(append([]string{}, s.args...), script)...)
 	cmd.Stderr = s.stderr
 	return cmd
 }
 
+// run executes a remote shell command while streaming input and output.
 func (s sshSession) run(ctx context.Context, script string, stdin io.Reader, stdout io.Writer) error {
 	cmd := s.command(ctx, script)
 	cmd.Stdin, cmd.Stdout = stdin, stdout
 	return cmd.Run()
 }
 
+// output executes a remote shell command and captures its standard output.
 func (s sshSession) output(ctx context.Context, script string) (string, error) {
 	var output bytes.Buffer
 	err := s.run(ctx, script, nil, &output)
 	return output.String(), err
 }
 
+// command creates a cancellable process whose entire process group is terminated with its context.
 func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	// Kill the local process group on cancellation so transfer helpers do not
@@ -346,6 +366,7 @@ func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// pipeline streams between two processes and cancels their shared context if either fails.
 func pipeline(producer, consumer *exec.Cmd, cancel context.CancelFunc) error {
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -380,6 +401,7 @@ type lockedWriter struct {
 	writer io.Writer
 }
 
+// Write serializes writes from concurrent transfer processes to the underlying output writer.
 func (w lockedWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

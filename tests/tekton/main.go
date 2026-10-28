@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// main validates catalog resources against Tekton's configured admission types.
 func main() {
 	flags, err := config.NewFeatureFlagsFromMap(map[string]string{"enable-api-fields": "beta"})
 	if err != nil {

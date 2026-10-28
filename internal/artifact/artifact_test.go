@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// writeFile creates a fixture with parent directories and an exact permission mode.
 func writeFile(t *testing.T, path, contents string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -27,6 +28,7 @@ func writeFile(t *testing.T, path, contents string, mode os.FileMode) {
 	}
 }
 
+// link creates a symbolic link fixture and fails the test if creation fails.
 func link(t *testing.T, target, path string) {
 	t.Helper()
 	if err := os.Symlink(target, path); err != nil {
@@ -34,6 +36,7 @@ func link(t *testing.T, target, path string) {
 	}
 }
 
+// sourceTree creates a minimal checkout containing an executable build script.
 func sourceTree(t *testing.T) string {
 	t.Helper()
 	source := filepath.Join(t.TempDir(), "source")
@@ -41,6 +44,7 @@ func sourceTree(t *testing.T) string {
 	return source
 }
 
+// readFile loads fixture contents and reports read failures at the caller.
 func readFile(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -50,59 +54,68 @@ func readFile(t *testing.T, path string) []byte {
 	return data
 }
 
-func TestPrepareAcceptsScriptWithSpacesAndInternalSymlink(t *testing.T) {
-	source := sourceTree(t)
-	link(t, "build.sh", filepath.Join(source, "build script.sh"))
-	if err := Prepare(source, "./build script.sh"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPrepareRejectsInvalidScript(t *testing.T) {
-	for _, script := range []string{"/bin/sh", "../build.sh", "foo/../build.sh", "missing", "", "."} {
-		t.Run(script, func(t *testing.T) {
-			if err := Prepare(sourceTree(t), script); err == nil {
-				t.Fatalf("accepted invalid script %q", script)
-			}
-		})
-	}
+// TestPrepareAcceptsSourceWithoutScriptRequirements allows source trees whose
+// build command will be resolved and executed only inside the developer image.
+func TestPrepareAcceptsSourceWithoutScriptRequirements(t *testing.T) {
 	for _, tc := range []struct {
 		name, contents string
 		mode           os.FileMode
 	}{
-		{"not executable", "#!/bin/sh\n", 0644},
-		{"missing shebang", "echo hello\n", 0755},
-		{"empty script", "", 0755},
+		{"empty source", "", 0},
+		{"non-executable file", "build configuration\n", 0644},
+		{"native executable", "\x7fELF\x00\x00", 0755},
+		{"empty executable", "", 0755},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			source := sourceTree(t)
-			writeFile(t, filepath.Join(source, "build.sh"), tc.contents, tc.mode)
-			if err := Prepare(source, "build.sh"); err == nil {
-				t.Fatalf("accepted %s", tc.name)
+			source := t.TempDir()
+			if tc.mode != 0 {
+				writeFile(t, filepath.Join(source, "build.sh"), tc.contents, tc.mode)
+			}
+			if err := Prepare(source); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
 }
 
-func TestPrepareRequiresExecutePermissionForCurrentUser(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root may execute a file with any executable bit")
-	}
+// TestPrepareAcceptsInternalSymlinks permits relative links to source files and
+// missing targets when their resolved paths remain inside the source tree.
+func TestPrepareAcceptsInternalSymlinks(t *testing.T) {
 	source := sourceTree(t)
-	writeFile(t, filepath.Join(source, "build.sh"), "#!/bin/sh\n", 0610)
-	if err := Prepare(source, "build.sh"); err == nil {
-		t.Fatal("accepted script whose owner lacks execute permission")
+	link(t, "build.sh", filepath.Join(source, "build script.sh"))
+	link(t, "missing", filepath.Join(source, "dangling"))
+	if err := Prepare(source); err != nil {
+		t.Fatal(err)
 	}
 }
 
+// TestPrepareRequiresRealSourceDirectory rejects missing roots and regular files.
+func TestPrepareRequiresRealSourceDirectory(t *testing.T) {
+	for _, kind := range []string{"missing", "regular file"} {
+		t.Run(kind, func(t *testing.T) {
+			source := filepath.Join(t.TempDir(), "source")
+			if kind == "regular file" {
+				writeFile(t, source, "source", 0644)
+			}
+			if err := Prepare(source); err == nil {
+				t.Fatalf("accepted %s", kind)
+			}
+		})
+	}
+}
+
+// TestPrepareRejectsSymlinkRootWithTrailingSlash covers paths whose trailing
+// separator would otherwise cause filesystem operations to follow a root link.
 func TestPrepareRejectsSymlinkRootWithTrailingSlash(t *testing.T) {
 	source := sourceTree(t)
 	link(t, source, source+"-link")
-	if err := Prepare(source+"-link/", "build.sh"); err == nil {
+	if err := Prepare(source + "-link/"); err == nil {
 		t.Fatal("accepted a symlink root with a trailing slash")
 	}
 }
 
+// TestPrepareRejectsUnsafeSourceTrees checks that source validation rejects
+// escaping, absolute, and cyclic links, special files, and a linked root.
 func TestPrepareRejectsUnsafeSourceTrees(t *testing.T) {
 	for _, kind := range []string{"sibling", "absolute", "cycle", "fifo", "symlink root"} {
 		t.Run(kind, func(t *testing.T) {
@@ -125,13 +138,15 @@ func TestPrepareRejectsUnsafeSourceTrees(t *testing.T) {
 				link(t, source, source+"-link")
 				source += "-link"
 			}
-			if err := Prepare(source, "build.sh"); err == nil {
+			if err := Prepare(source); err == nil {
 				t.Fatalf("accepted %s", kind)
 			}
 		})
 	}
 }
 
+// TestStageOutputExportsOnlyDeliverablesAndPreservesModesAndLinks checks that
+// staging isolates out/ from modified source and preserves deliverable metadata.
 func TestStageOutputExportsOnlyDeliverablesAndPreservesModesAndLinks(t *testing.T) {
 	source := sourceTree(t)
 	writeFile(t, filepath.Join(source, "out", "bin", "hello"), "deliverable", 0751)
@@ -171,6 +186,8 @@ func TestStageOutputExportsOnlyDeliverablesAndPreservesModesAndLinks(t *testing.
 	}
 }
 
+// TestStageOutputRejectsInvalidOutputBeforeCopying verifies that unsafe or empty
+// output leaves the private export directory untouched.
 func TestStageOutputRejectsInvalidOutputBeforeCopying(t *testing.T) {
 	for _, kind := range []string{"missing", "empty", "directories only", "links only", "fifo", "escape", "absolute", "cycle", "output symlink", "source symlink"} {
 		t.Run(kind, func(t *testing.T) {
@@ -222,6 +239,8 @@ func TestStageOutputRejectsInvalidOutputBeforeCopying(t *testing.T) {
 	}
 }
 
+// TestStageOutputWritesTrustedPlatformOutsideUserOutput ensures the caller's
+// platform label is exported independently of a forged source-tree marker.
 func TestStageOutputWritesTrustedPlatformOutsideUserOutput(t *testing.T) {
 	source := sourceTree(t)
 	writeFile(t, filepath.Join(source, "out", "hello"), "deliverable", 0644)
@@ -238,6 +257,8 @@ func TestStageOutputWritesTrustedPlatformOutsideUserOutput(t *testing.T) {
 	}
 }
 
+// TestStageOutputRejectsInvalidPlatform checks that malformed platform labels
+// fail before any deliverables are staged.
 func TestStageOutputRejectsInvalidPlatform(t *testing.T) {
 	for _, platform := range []string{"/linux/amd64", "../amd64", "linux/../amd64", "linux arm64", "linux\narm64", ".", "-linux"} {
 		t.Run(platform, func(t *testing.T) {
@@ -255,6 +276,7 @@ func TestStageOutputRejectsInvalidPlatform(t *testing.T) {
 	}
 }
 
+// inputTree creates one indexed build input with output and a platform marker.
 func inputTree(t *testing.T, root, index, platform, contents string) string {
 	t.Helper()
 	source := filepath.Join(root, "inputs", index)
@@ -263,6 +285,7 @@ func inputTree(t *testing.T, root, index, platform, contents string) string {
 	return source
 }
 
+// pack packages fixture inputs into the conventional test archive and directory.
 func pack(t *testing.T, root, layout string) error {
 	t.Helper()
 	return Pack(filepath.Join(root, "inputs"), filepath.Join(root, "package"), filepath.Join(root, "payload.tar.gz"), layout)
@@ -273,6 +296,8 @@ type archiveEntry struct {
 	data   string
 }
 
+// archiveEntries reads archive members while verifying deterministic gzip and
+// tar ownership and timestamp metadata.
 func archiveEntries(t *testing.T, path string) []archiveEntry {
 	t.Helper()
 	reader, err := gzip.NewReader(bytes.NewReader(readFile(t, path)))
@@ -305,6 +330,8 @@ func archiveEntries(t *testing.T, path string) []archiveEntry {
 	return entries
 }
 
+// TestPackMapsPlatformsWithoutAssumingInputOrder verifies that trusted markers
+// determine platform directories regardless of indexed input order.
 func TestPackMapsPlatformsWithoutAssumingInputOrder(t *testing.T) {
 	root := t.TempDir()
 	inputTree(t, root, "0", "linux/arm64", "arm")
@@ -327,6 +354,8 @@ func TestPackMapsPlatformsWithoutAssumingInputOrder(t *testing.T) {
 	}
 }
 
+// TestPackFlatPreservesLinksModesAndProducesDeterministicArchive checks that flat
+// packaging preserves deliverable metadata and ignores source timestamps.
 func TestPackFlatPreservesLinksModesAndProducesDeterministicArchive(t *testing.T) {
 	root := t.TempDir()
 	source := inputTree(t, root, "0", "", "hello")
@@ -369,6 +398,8 @@ func TestPackFlatPreservesLinksModesAndProducesDeterministicArchive(t *testing.T
 	}
 }
 
+// TestPackRejectsInvalidInputWithoutCreatingArchive covers unsafe trees, invalid
+// layouts, and untrusted platform markers before an archive can be published.
 func TestPackRejectsInvalidInputWithoutCreatingArchive(t *testing.T) {
 	for _, kind := range []string{"empty inputs", "empty output", "escape", "absolute", "cycle", "fifo", "source symlink", "output symlink", "input root symlink", "multiple flat", "unknown layout", "duplicate platforms", "missing marker", "symlink marker", "invalid platform"} {
 		t.Run(kind, func(t *testing.T) {

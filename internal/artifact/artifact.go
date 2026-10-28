@@ -12,34 +12,14 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
-// Prepare checks the restored source and the executable script selected to run.
-func Prepare(source, script string) error {
+// Prepare validates the restored source tree before it enters a developer image.
+// The build command is resolved later inside that image, where it will execute.
+func Prepare(source string) error {
 	if _, err := checkTree(source); err != nil {
 		return fmt.Errorf("source validation failed: %w", err)
-	}
-	if err := safeRelative(script); err != nil {
-		return err
-	}
-	path := filepath.Join(source, script)
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("script: %w", err)
-	}
-	if !info.Mode().IsRegular() || syscall.Access(path, 1) != nil {
-		return fmt.Errorf("script must be an executable regular file: %s", path)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	var prefix [2]byte
-	if _, err := io.ReadFull(file, prefix[:]); err != nil || string(prefix[:]) != "#!" {
-		return fmt.Errorf("script must have an interpreter shebang: %s", path)
 	}
 	return nil
 }
@@ -151,6 +131,7 @@ func Pack(inputRoot, packageRoot, archivePath, layout string) error {
 	return writeArchive(packageRoot, archivePath)
 }
 
+// safeRelative requires a nonempty relative path with no parent components.
 func safeRelative(value string) error {
 	if value == "" || filepath.IsAbs(value) || slices.Contains(strings.Split(filepath.ToSlash(value), "/"), "..") {
 		return fmt.Errorf("expected a relative path without '..': %q", value)
@@ -163,6 +144,7 @@ var (
 	platformPunctuation = regexp.MustCompile(`[^A-Za-z0-9]`)
 )
 
+// checkPlatform validates labels before they become platform directory names.
 func checkPlatform(platform string) error {
 	if !platformLabel.MatchString(platform) {
 		return fmt.Errorf("invalid platform label: %q", platform)
@@ -170,6 +152,7 @@ func checkPlatform(platform string) error {
 	return safeRelative(platform)
 }
 
+// realDirectory requires the cleaned path to name a directory, not a symlink.
 func realDirectory(path string) error {
 	info, err := os.Lstat(filepath.Clean(path))
 	if err != nil {
@@ -181,6 +164,7 @@ func realDirectory(path string) error {
 	return nil
 }
 
+// checkOutput validates an output tree and requires at least one regular file.
 func checkOutput(path string) error {
 	files, err := checkTree(path)
 	if err != nil {
@@ -192,6 +176,8 @@ func checkOutput(path string) error {
 	return nil
 }
 
+// checkTree counts regular files while rejecting special files and unsafe links.
+// The root must be a real directory; links within it must stay inside the tree.
 func checkTree(root string) (int, error) {
 	if err := realDirectory(root); err != nil {
 		return 0, err
@@ -228,8 +214,8 @@ func checkTree(root string) (int, error) {
 	return files, err
 }
 
-// Resolve components without cleaning away '..' before following links. Missing
-// targets are allowed, but even a dangling link must stay inside the artifact.
+// checkLink resolves components without cleaning away '..' before following links.
+// Missing targets are allowed, but dangling links must stay inside the artifact.
 func checkLink(root, relative string) error {
 	pending := strings.Split(relative, string(filepath.Separator))
 	current := root
@@ -276,6 +262,9 @@ func checkLink(root, relative string) error {
 	return nil
 }
 
+// copyTree copies a validated tree, preserving file modes and symlink targets.
+// Directory modes are restored after copying so read-only trees remain writable
+// during construction.
 func copyTree(source, destination string) error {
 	type directory struct {
 		path string
@@ -325,6 +314,7 @@ func copyTree(source, destination string) error {
 	return nil
 }
 
+// copyFile creates a new destination with the source contents and requested mode.
 func copyFile(source, destination string, mode os.FileMode) error {
 	input, err := os.Open(source)
 	if err != nil {
@@ -345,6 +335,8 @@ func copyFile(source, destination string, mode os.FileMode) error {
 	return output.Close()
 }
 
+// writeArchive atomically publishes a gzip-compressed tar of the staged tree.
+// Sorted entries and normalized owner and time metadata make it reproducible.
 func writeArchive(root, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -414,6 +406,7 @@ func writeArchive(root, path string) error {
 	return os.Rename(file.Name(), path)
 }
 
+// archiveFile writes a regular file's contents after its tar header is emitted.
 func archiveFile(archive *tar.Writer, path string) error {
 	file, err := os.Open(path)
 	if err != nil {

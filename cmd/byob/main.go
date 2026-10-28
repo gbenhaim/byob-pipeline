@@ -12,6 +12,8 @@ import (
 	"github.com/gbenhaim/byob-pipeline/internal/cli"
 )
 
+// main runs the trusted CLI with signal cancellation and preserves subprocess
+// exit codes when an operation fails.
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -4,7 +4,7 @@ A Tekton catalog implementing the pipeline portion of [ADR 73](https://github.co
 Commit an executable `build.sh` that writes deliverables into `out/`. The pipeline
 checks out the reviewed source, executes the script, and packages its output as an
 OCI artifact with an SPDX SBOM. The default builder is digest-pinned Konflux
-`task-runner`; another image and script path can be literals in the committed
+`task-runner`; another image and build command can be literals in the committed
 PipelineRun.
 
 Trusted Task logic lives in the PoC `byob` Go CLI. The Tasks call its subcommands
@@ -29,7 +29,7 @@ build artifact after the build. All matrix builds must succeed before packaging.
 
 ## Task contract
 
-- `run-build` takes `image`, `script-path`, checkout's `SOURCE_ARTIFACT`, and
+- `run-build` takes `image`, `build-cmd`, checkout's `SOURCE_ARTIFACT`, and
   platform-owned `ociStorage`/`ociArtifactExpiresAfter`. It emits `BUILD_ARTIFACT`
   containing only `out/`, plus platform metadata for matrix builds. The source
   tree, build scripts, and caches outside `out/` are never re-exported.
@@ -41,12 +41,20 @@ build artifact after the build. All matrix builds must succeed before packaging.
   `/var/workdir/inputs/0/out/`. Each step writes its own deliverables to `out/`;
   it must copy any preceding outputs it wants to retain. The chained example
   demonstrates this. The output result remains the string `BUILD_ARTIFACT`.
-- The script path is relative to the source root, executable, and has a shebang.
-  Images must provide `/bin/sh` and the script's interpreter. The image entrypoint
-  is bypassed. Scripts run as UID 1000/GID 0 with dropped capabilities and no
-  privilege escalation; their working directory is `/var/workdir/source`.
-- Scripts may fetch dependencies. Absolute/traversing script paths, escaping
-  symlinks, and special files are rejected. No cache or PVC is shared between runs.
+- `build-cmd` is an argument array, defaulting to `["./build.sh"]`. For example,
+  `["make", "build"]` or `["/usr/local/bin/builder", "--release"]` executes directly
+  from `/var/workdir/source`. Arguments are literal, without shell parsing.
+  The developer image needs the selected executable and its own runtime dependencies;
+  neither Bash nor `sh` is required. The image's entrypoint and default command are
+  overridden. Builds run as UID 1000/GID 0 with dropped capabilities and no
+  privilege escalation, with writable `HOME=/var/workdir/home`.
+- A static launcher is staged in a separate volume and mounted read-only by the
+  local developer step. It sets the working directory after source restoration
+  and replaces itself with the build executable. Remote Podman executes the same
+  argument array directly. Source preparation validates the source tree; it does
+  not require the build executable to be a repository script.
+- Builds may fetch dependencies. Escaping source/output symlinks and special
+  files are rejected. No cache or PVC is shared between runs.
 - After the script finishes, `validate-output` checks only `out/` and copies it
   into a separate volume mounted only by trusted validation/export steps. Output
   must be a real directory with at least one regular file; symlinks must stay
@@ -99,7 +107,7 @@ cp examples/pipelineruns/byob.yaml dist/run.yaml
 Edit `dist/run.yaml` to replace every `YOUR_*` and `REPLACE_WITH_*` value with your
 repository, exact source commit, registry destinations, and a unique output tag.
 `examples/pipelineruns/` also includes remote, matrix, and chained runs. Change
-build images, script paths, or platforms directly in the corresponding Pipeline
+build images, command arrays, or platforms directly in the corresponding Pipeline
 YAML before installing it. Submit and inspect the run with:
 
 ```sh
@@ -189,7 +197,7 @@ Admission, release policy, signing, and controller deployment are outside this r
 ## Development and tests
 
 Edit `task/run-build/0.1/run-build.yaml`, `task/pack/0.1/pack.yaml`, and `pipelines/`
-directly. CLI code lives in `cmd/byob` and `internal/`; the Go remote generator
+directly. The Cobra CLI lives in `cmd/byob` and `internal/`; the Go remote generator
 adds CLI invocations to the local Task. Run `make generate` after changing
 `run-build` or the remote generator; only
 `task/run-build-remote/0.1/run-build-remote.yaml` is generated.
@@ -213,8 +221,8 @@ and Tekton 1.16 admission validation. There is no Python test dependency.
 the binary into the pinned Konflux task-runner image, which supplies SSH, tar,
 ORAS, Syft, and Cosign. It also copies the upstream Trusted Artifacts restoration
 helpers so repository-specific registry authentication and retries stay upstream.
-The developer-image entry command still uses `/bin/sh`; the remote VM worker is
-a small Bash/Podman script embedded in the CLI. No CLI installation is required
+The remote VM worker is a small Bash/Podman script embedded in the CLI; Bash is
+required on the VM, not in the developer image. No CLI installation is required
 in developer images or on VMs. `catalog-lock.yaml` records inspected upstream
 versions; it does not generate or override manifest pins.
 
@@ -222,7 +230,9 @@ versions; it does not generate or override manifest pins.
 CLI image, rootless Podman, and a temporary registry to exercise real Trusted
 Artifact tools, output packaging, and remote execution through a local SSH
 transport fixture. It pulls the pinned upstream images and does not contact a
-Kubernetes cluster. A complete cluster check must additionally
+Kubernetes cluster. A separate native fixture image contains no shell and checks
+local/remote argument handling, writable HOME, and overriding the image's default
+command. A complete cluster check must additionally
 run the local and mixed-platform PipelineRuns in an explicitly selected test
 namespace, check their signed results, and verify VM cleanup after failure and
 cancellation; no configured cluster is used implicitly by these tools.

@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// fixture supplies a minimal local Task for generator transformation tests.
 func fixture() map[string]any {
 	return map[string]any{
 		"metadata": map[string]any{"name": "run-build"},
@@ -13,13 +14,14 @@ func fixture() map[string]any {
 			"params": []any{}, "results": []any{}, "volumes": []any{},
 			"steps": []any{
 				map[string]any{"name": "prepare", "image": "trusted@sha256:abc"},
-				map[string]any{"name": "build", "image": "$(params.image)", "command": []any{"/bin/sh"}, "args": []any{"./build.sh"}, "workingDir": "/var/workdir", "volumeMounts": []any{map[string]any{"name": "workdir", "mountPath": "/var/workdir"}}},
+				map[string]any{"name": "build", "image": "$(params.image)", "command": []any{"/var/build-tools/byob"}, "args": []any{"exec-build", "--", "$(params.build-cmd[*])"}, "workingDir": "/var/workdir", "volumeMounts": []any{map[string]any{"name": "workdir", "mountPath": "/var/workdir"}}},
 				map[string]any{"name": "validate-output", "command": []any{"/usr/local/bin/byob"}, "args": []any{"stage-output", "--source=/var/workdir/source", "--output=/var/build-output"}},
 			},
 		},
 	}
 }
 
+// TestMissingBuildFailsInsteadOfEmittingNonRemoteTask rejects incomplete source Tasks.
 func TestMissingBuildFailsInsteadOfEmittingNonRemoteTask(t *testing.T) {
 	task := fixture()
 	task["spec"].(map[string]any)["steps"] = []any{}
@@ -29,6 +31,7 @@ func TestMissingBuildFailsInsteadOfEmittingNonRemoteTask(t *testing.T) {
 	}
 }
 
+// TestRoutingKeepsSecretOffDeveloperImage preserves the SSH credential boundary.
 func TestRoutingKeepsSecretOffDeveloperImage(t *testing.T) {
 	task := fixture()
 	if err := convert(task, "build", "run-build-remote"); err != nil {
@@ -56,6 +59,7 @@ func TestRoutingKeepsSecretOffDeveloperImage(t *testing.T) {
 	}
 }
 
+// TestGeneratedStepsCallTrustedCLIWithParameterArguments checks generated CLI wiring.
 func TestGeneratedStepsCallTrustedCLIWithParameterArguments(t *testing.T) {
 	task := fixture()
 	if err := convert(task, "build", "run-build-remote"); err != nil {
@@ -63,7 +67,7 @@ func TestGeneratedStepsCallTrustedCLIWithParameterArguments(t *testing.T) {
 	}
 	want := map[string][]any{
 		"select-platform": {"select-platform", "--ssh-dir=/ssh", "--result=$(step.results.MODE.path)"},
-		"build-remote":    {"build-remote", "--ssh-dir=/ssh", "--source=/var/workdir/source", "--inputs=/var/workdir/inputs", "--control=/var/workdir/control", "--image=$(params.image)", "--script=$(params.script-path)"},
+		"build-remote":    {"build-remote", "--ssh-dir=/ssh", "--source=/var/workdir/source", "--inputs=/var/workdir/inputs", "--control=/var/workdir/control", "--image=$(params.image)", "--", "$(params.build-cmd[*])"},
 		"record-image":    {"record-image", "--mode=$(steps.select-platform.results.MODE)", "--image=$(params.image)", "--control=/var/workdir/control", "--result=$(step.results.BUILD_IMAGE_ARTIFACT_INPUTS.path)"},
 	}
 	for _, item := range items(task["spec"].(map[string]any), "steps") {
@@ -96,6 +100,7 @@ func TestGeneratedStepsCallTrustedCLIWithParameterArguments(t *testing.T) {
 	}
 }
 
+// TestPlatformIsPassedToOutputValidationAsArgument preserves trusted matrix metadata.
 func TestPlatformIsPassedToOutputValidationAsArgument(t *testing.T) {
 	task := fixture()
 	if err := convert(task, "build", "run-build-remote"); err != nil {

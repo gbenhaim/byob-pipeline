@@ -18,6 +18,8 @@ import (
 var artifactReference = regexp.MustCompile(`^oci:[^\s=]+@sha256:[a-f0-9]{64}$`)
 var manifestDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
+// restoreInputs validates OCI references and restores each artifact separately so
+// duplicate filenames cannot overwrite outputs from another build.
 func restoreInputs(ctx context.Context, root string, refs []string, required bool, stdout, stderr io.Writer) error {
 	if required && len(refs) == 0 {
 		return fmt.Errorf("at least one build artifact is required")
@@ -50,6 +52,8 @@ type publishOptions struct {
 	PlainHTTP                                                                  bool
 }
 
+// publish pushes the payload and attaches its SBOM, then writes result files only
+// after both registry operations have succeeded.
 func publish(ctx context.Context, opts publishOptions, stdout, stderr io.Writer) error {
 	if opts.Image == "" || opts.ArtifactType == "" || opts.URLResult == "" || opts.DigestResult == "" || opts.SBOMResult == "" {
 		return fmt.Errorf("image, artifact-type and all three result paths are required")

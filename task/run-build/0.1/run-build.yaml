@@ -11,12 +11,13 @@ spec:
   params:
   - name: image
     type: string
-    description: Digest-pinned developer image, with /bin/sh and the script interpreter.
+    description: Digest-pinned developer image containing the requested build executable.
     default: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
-  - name: script-path
-    type: string
-    description: Executable script path relative to the source tree.
-    default: build.sh
+  - name: build-cmd
+    type: array
+    description: Executable and arguments, run directly from the source directory without a shell.
+    default:
+    - ./build.sh
   - name: SOURCE_ARTIFACT
     type: string
     description: Original checkout Trusted Artifact, restored independently for every build.
@@ -51,6 +52,8 @@ spec:
   - name: workdir
     emptyDir: {}
   - name: build-output
+    emptyDir: {}
+  - name: build-tools
     emptyDir: {}
   - name: registry-auth
     secret:
@@ -97,31 +100,36 @@ spec:
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
+    - name: build-tools
+      mountPath: /var/build-tools
     command:
     - /usr/local/bin/byob
     args:
     - prepare
     - --source=/var/workdir/source
-    - --script=$(params.script-path)
+    - --tools=/var/build-tools
   - name: build
     image: $(params.image)
     command:
-    - /bin/sh
+    - /var/build-tools/byob
     args:
-    - -eu
-    - -c
-    - mkdir -p "$HOME"; cd source; exec "./$1"
-    - run-build
-    - $(params.script-path)
+    - exec-build
+    - --source=/var/workdir/source
+    - --home=/var/workdir/home
+    - --
+    - $(params.build-cmd[*])
     workingDir: /var/workdir
     env:
     - name: HOME
-      value: /tmp/byob-home
+      value: /var/workdir/home
     - name: BUILD_INPUTS
       value: /var/workdir/inputs
     volumeMounts:
     - name: workdir
       mountPath: /var/workdir
+    - name: build-tools
+      mountPath: /var/build-tools
+      readOnly: true
     computeResources:
       requests:
         cpu: '1'

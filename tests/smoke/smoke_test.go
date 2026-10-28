@@ -20,14 +20,20 @@ import (
 )
 
 type taskStep struct {
-	Name       string                         `yaml:"name"`
-	Image      string                         `yaml:"image"`
-	Command    []string                       `yaml:"command"`
-	Args       []string                       `yaml:"args"`
-	WorkingDir string                         `yaml:"workingDir"`
-	Env        []struct{ Name, Value string } `yaml:"env"`
+	Name         string                         `yaml:"name"`
+	Image        string                         `yaml:"image"`
+	Command      []string                       `yaml:"command"`
+	Args         []string                       `yaml:"args"`
+	WorkingDir   string                         `yaml:"workingDir"`
+	Env          []struct{ Name, Value string } `yaml:"env"`
+	VolumeMounts []struct {
+		Name      string `yaml:"name"`
+		MountPath string `yaml:"mountPath"`
+		ReadOnly  bool   `yaml:"readOnly"`
+	} `yaml:"volumeMounts"`
 }
 
+// readSteps loads Task commands and parameter defaults for container smoke execution.
 func readSteps(t *testing.T, root, name string) (map[string]taskStep, map[string]any) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, "task", name, "0.1", name+".yaml"))
@@ -56,6 +62,8 @@ func readSteps(t *testing.T, root, name string) (map[string]taskStep, map[string
 	}
 	return steps, defaults
 }
+
+// execute runs a smoke-test command and reports captured output on failure.
 func execute(t *testing.T, env []string, command ...string) string {
 	t.Helper()
 	cmd := exec.Command(command[0], command[1:]...)
@@ -71,18 +79,24 @@ func execute(t *testing.T, env []string, command ...string) string {
 	}
 	return strings.TrimSpace(string(output))
 }
+
+// write writes a fixture file with the required permissions.
 func write(t *testing.T, path, value string, mode os.FileMode) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(value), mode); err != nil {
 		t.Fatal(err)
 	}
 }
+
+// mkdir creates a fixture directory and any missing parents.
 func mkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0755); err != nil {
 		t.Fatal(err)
 	}
 }
+
+// read reads a fixture or generated result file as text.
 func read(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -91,6 +105,8 @@ func read(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// requireEntries checks a directory's immediate entries against the expected names.
 func requireEntries(t *testing.T, path string, want ...string) {
 	t.Helper()
 	entries, err := os.ReadDir(path)
@@ -105,6 +121,8 @@ func requireEntries(t *testing.T, path string, want ...string) {
 		t.Fatalf("%s entries=%v want=%v", path, got, want)
 	}
 }
+
+// requireMissing checks that a rejected or isolated path was not created.
 func requireMissing(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -112,6 +130,7 @@ func requireMissing(t *testing.T, path string) {
 	}
 }
 
+// TestPipeline exercises real artifact handoffs, CLI packaging, and local/remote builders using disposable containers.
 func TestPipeline(t *testing.T) {
 	if os.Getenv("BYOB_SMOKE") != "1" {
 		t.Skip("set BYOB_SMOKE=1 to run rootless Podman integration")
@@ -138,8 +157,10 @@ func TestPipeline(t *testing.T) {
 			}
 		}
 	})
-	execute(t, nil, "podman", "run", "-d", "--name", registry, "--network", network, "--network-alias", "registry", "docker.io/library/registry:2")
+	execute(t, nil, "podman", "run", "-d", "--name", registry, "--network", network, "--network-alias", "registry", "-p", "127.0.0.1::5000", "docker.io/library/registry:2")
+	hostRegistry := execute(t, nil, "podman", "port", registry, "5000/tcp")
 	work := t.TempDir()
+	toolsDir := t.TempDir()
 	if err := os.CopyFS(filepath.Join(work, "source"), os.DirFS(filepath.Join(root, "examples/component"))); err != nil {
 		t.Fatal(err)
 	}
@@ -159,10 +180,11 @@ func TestPipeline(t *testing.T) {
 		return execute(t, nil, append(append(common(false), "-e", "ORAS_OPTIONS=--plain-http", trusted), args...)...)
 	}
 	replacements := map[string]string{
-		"$(params.image)": builder, "$(params.script-path)": "build.sh", "$(params.layout)": "flat",
+		"$(params.image)": builder, "$(params.layout)": "flat",
 		"$(params.IMAGE)": "registry:5000/byob:output", "$(params.artifactType)": "application/vnd.konflux.build-output.v1",
 		"$(params.ociStorage)": "registry:5000/byob", "$(params.ociArtifactExpiresAfter)": "",
 	}
+	buildCommand := []string{"./build.sh"}
 	replace := func(value string) string {
 		for from, to := range replacements {
 			value = strings.ReplaceAll(value, from, to)
@@ -171,6 +193,15 @@ func TestPipeline(t *testing.T) {
 	}
 	runStep := func(step taskStep, refs []string, readonly bool, extra []string) {
 		cmd := append(common(readonly), extra...)
+		for _, mount := range step.VolumeMounts {
+			if mount.Name == "build-tools" {
+				options := ":Z"
+				if mount.ReadOnly {
+					options = ":ro,Z"
+				}
+				cmd = append(cmd, "-v", toolsDir+":"+mount.MountPath+options)
+			}
+		}
 		if step.WorkingDir != "" {
 			cmd = append(cmd, "--workdir", step.WorkingDir)
 		}
@@ -192,6 +223,8 @@ func TestPipeline(t *testing.T) {
 		for _, arg := range step.Args {
 			if arg == "$(params.BUILD_ARTIFACTS[*])" {
 				cmd = append(cmd, refs...)
+			} else if arg == "$(params.build-cmd[*])" {
+				cmd = append(cmd, buildCommand...)
 			} else {
 				cmd = append(cmd, replace(arg))
 			}
@@ -201,7 +234,7 @@ func TestPipeline(t *testing.T) {
 	artifact("create", "--store", "registry:5000/byob:checkout", "/var/workdir/checkout.ref=/var/workdir/source")
 	checkout := read(t, filepath.Join(work, "checkout.ref"))
 	buildScript := func(path string) {
-		replacements["$(params.script-path)"] = path
+		buildCommand = []string{"./" + path}
 		runStep(local["prepare"], nil, true, nil)
 		runStep(local["build"], nil, false, nil)
 	}
@@ -309,7 +342,8 @@ func TestPipeline(t *testing.T) {
 	scriptPath := filepath.Join(work, "source/build.sh")
 	write(t, scriptPath, read(t, scriptPath)+"test \"$(cat \"$BUILD_INPUTS/1/out/generated.txt\")\" = 'Generated by another build'\nprintf changed > private-source.txt\nprintf extra > remote-source-change.txt\n", 0755)
 	remoteEnv := append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	remoteCommand := []string{filepath.Join(root, "dist/byob"), "build-remote", "--ssh-dir=" + sshDir, "--source=" + filepath.Join(work, "source"), "--inputs=" + filepath.Join(work, "inputs"), "--control=" + filepath.Join(work, "control"), "--image=" + builder, "--script=build.sh"}
+	remoteBase := []string{filepath.Join(root, "dist/byob"), "build-remote", "--ssh-dir=" + sshDir, "--source=" + filepath.Join(work, "source"), "--inputs=" + filepath.Join(work, "inputs"), "--control=" + filepath.Join(work, "control")}
+	remoteCommand := append(slices.Clone(remoteBase), "--image="+builder, "--", "./build.sh")
 	execute(t, remoteEnv, remoteCommand...)
 	if !strings.HasPrefix(read(t, filepath.Join(work, "source/out/hello.txt")), "Built on ") {
 		t.Fatal("missing remote output")
@@ -341,4 +375,65 @@ func TestPipeline(t *testing.T) {
 			requireEntries(t, remoteRoot)
 		})
 	}
+	t.Run("shell-free-image", func(t *testing.T) {
+		image := shellFreeImage(t, root, hostRegistry, network)
+		replacements["$(params.image)"] = image
+		podman, err := exec.LookPath("podman")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The real Podman worker only uses HTTP for this disposable test registry.
+		write(t, filepath.Join(binDir, "podman"), `#!/bin/bash
+set -eu
+global=$1
+operation=$2
+shift 2
+if [[ "$operation" == pull && "${*: -1}" == "$BYOB_SMOKE_REGISTRY/"* ]]; then
+    exec "$BYOB_REAL_PODMAN" "$global" "$operation" --tls-verify=false "$@"
+fi
+exec "$BYOB_REAL_PODMAN" "$global" "$operation" "$@"
+`, 0755)
+		fixtureEnv := append(slices.Clone(remoteEnv), "BYOB_REAL_PODMAN="+podman, "BYOB_SMOKE_REGISTRY="+hostRegistry)
+		for _, args := range [][]string{{}, {"with spaces", "; touch injected", "$(touch injected)", "--leading-dash", "quote'\""}} {
+			buildCommand = append([]string{"/fixture-builder"}, args...)
+			expected, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(work, "source/expected-arguments.json"), string(expected), 0644)
+			runStep(local["prepare"], nil, true, nil)
+			runStep(local["build"], nil, false, nil)
+			if read(t, filepath.Join(work, "source/out/arguments.json")) != string(expected) {
+				t.Fatal("local argv changed")
+			}
+			remoteArgs := append(slices.Clone(remoteBase), "--image="+image, "--")
+			remoteArgs = append(remoteArgs, buildCommand...)
+			execute(t, fixtureEnv, remoteArgs...)
+			if read(t, filepath.Join(work, "source/out/arguments.json")) != string(expected) {
+				t.Fatal("remote argv changed")
+			}
+			requireEntries(t, remoteRoot)
+			requireMissing(t, filepath.Join(work, "source/injected"))
+		}
+	})
+}
+
+// shellFreeImage builds and publishes a native fixture with no shell and a conflicting image CMD.
+func shellFreeImage(t *testing.T, root, registry, suffix string) string {
+	t.Helper()
+	buildDir := t.TempDir()
+	execute(t, append(os.Environ(), "CGO_ENABLED=0"), "go", "build", "-trimpath", "-o", filepath.Join(buildDir, "builder"), filepath.Join(root, "tests/smoke/testdata/builder"))
+	write(t, filepath.Join(buildDir, "Containerfile"), "FROM scratch\nCOPY --chown=1000:0 builder /fixture-builder\nENTRYPOINT [\"/fixture-builder\"]\nCMD [\"unexpected-image-default\"]\nUSER 1000:0\n", 0644)
+	tag := registry + "/shell-free:" + suffix
+	execute(t, nil, "podman", "build", "-t", tag, "-f", filepath.Join(buildDir, "Containerfile"), buildDir)
+	t.Cleanup(func() {
+		if output, err := exec.Command("podman", "rmi", "--ignore", tag).CombinedOutput(); err != nil {
+			t.Errorf("remove shell-free image: %v\n%s", err, output)
+		}
+	})
+	digestPath := filepath.Join(buildDir, "digest")
+	execute(t, nil, "podman", "push", "--tls-verify=false", "--digestfile", digestPath, tag)
+	image := registry + "/shell-free@" + strings.TrimSpace(read(t, digestPath))
+	execute(t, nil, "podman", "pull", "--tls-verify=false", image)
+	return image
 }

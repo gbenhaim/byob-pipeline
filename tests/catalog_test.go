@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,8 +13,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gbenhaim/byob-pipeline/internal/cli"
 	"gopkg.in/yaml.v3"
 )
+
+// TestMain provides native CLI and build subprocesses for the Task execution test.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "__fixture_build__" {
+		data, err := json.Marshal(os.Args[2:])
+		if err != nil || os.WriteFile("arguments.json", data, 0644) != nil {
+			os.Exit(98)
+		}
+		if info, err := os.Stat(os.Getenv("HOME")); err != nil || !info.IsDir() {
+			os.Exit(99)
+		}
+		os.Exit(17)
+	}
+	if os.Getenv("BYOB_CATALOG_CLI") == "1" {
+		if err := cli.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 type resource struct {
 	Kind string `yaml:"kind"`
@@ -96,6 +120,7 @@ type pipelineTask struct {
 	} `yaml:"matrix"`
 }
 
+// readResource loads a catalog resource relative to the repository root.
 func readResource(t *testing.T, path string) resource {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", path))
@@ -105,6 +130,7 @@ func readResource(t *testing.T, path string) resource {
 	return parseResource(t, data)
 }
 
+// parseResource decodes the resource fields used by catalog checks.
 func parseResource(t *testing.T, data []byte) resource {
 	t.Helper()
 	var value resource
@@ -114,11 +140,13 @@ func parseResource(t *testing.T, data []byte) resource {
 	return value
 }
 
+// taskSpec loads the authored or generated Task specification by name.
 func taskSpec(t *testing.T, name string) spec {
 	t.Helper()
 	return readResource(t, filepath.Join("task", name, "0.1", name+".yaml")).Spec
 }
 
+// findStep finds a named Task step or fails the calling test.
 func findStep(t *testing.T, task spec, name string) step {
 	t.Helper()
 	for _, value := range task.Steps {
@@ -130,6 +158,7 @@ func findStep(t *testing.T, task spec, name string) step {
 	return step{}
 }
 
+// findTask finds a named Pipeline task or fails the calling test.
 func findTask(t *testing.T, pipeline spec, name string) pipelineTask {
 	t.Helper()
 	for _, value := range pipeline.Tasks {
@@ -141,6 +170,7 @@ func findTask(t *testing.T, pipeline spec, name string) pipelineTask {
 	return pipelineTask{}
 }
 
+// findParam finds a declared or supplied parameter by name.
 func findParam(t *testing.T, params []param, name string) param {
 	t.Helper()
 	for _, value := range params {
@@ -152,6 +182,7 @@ func findParam(t *testing.T, params []param, name string) param {
 	return param{}
 }
 
+// assertEqual compares structured catalog values and reports their differences.
 func assertEqual(t *testing.T, got, want any) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
@@ -159,10 +190,12 @@ func assertEqual(t *testing.T, got, want any) {
 	}
 }
 
+// hasMount reports whether a step mounts the named volume.
 func hasMount(mounts []mount, name string) bool {
 	return slices.ContainsFunc(mounts, func(value mount) bool { return value.Name == name })
 }
 
+// TestTrustedTaskOperationsCallCLI checks that trusted Task operations invoke the CLI with explicit arguments.
 func TestTrustedTaskOperationsCallCLI(t *testing.T) {
 	operations := map[string]map[string]string{
 		"run-build":        {"restore-inputs": "restore-inputs", "prepare": "prepare", "validate-output": "stage-output"},
@@ -189,6 +222,7 @@ func TestTrustedTaskOperationsCallCLI(t *testing.T) {
 	}
 }
 
+// TestDeveloperStepsCannotMountCredentials verifies developer steps cannot access credential volumes.
 func TestDeveloperStepsCannotMountCredentials(t *testing.T) {
 	for taskName, stepName := range map[string]string{"run-build": "build", "run-build-remote": "build-local"} {
 		t.Run(taskName, func(t *testing.T) {
@@ -216,6 +250,7 @@ func TestDeveloperStepsCannotMountCredentials(t *testing.T) {
 	}
 }
 
+// TestRemoteTaskRoutesLocalhostWithoutSSHSecret checks local and remote execution selection and SSH isolation.
 func TestRemoteTaskRoutesLocalhostWithoutSSHSecret(t *testing.T) {
 	task := taskSpec(t, "run-build-remote")
 	for name, mode := range map[string]string{"build-local": "local", "build-remote": "remote"} {
@@ -246,6 +281,7 @@ func TestRemoteTaskRoutesLocalhostWithoutSSHSecret(t *testing.T) {
 	t.Fatal("missing controller SSH secret")
 }
 
+// TestDeveloperContainerCanBeCreatedBeforeSourceRestore prevents kubelet from precreating the source directory as a root-owned working directory.
 func TestDeveloperContainerCanBeCreatedBeforeSourceRestore(t *testing.T) {
 	for taskName, stepName := range map[string]string{"run-build": "build", "run-build-remote": "build-local"} {
 		t.Run(taskName, func(t *testing.T) {
@@ -265,6 +301,7 @@ func TestDeveloperContainerCanBeCreatedBeforeSourceRestore(t *testing.T) {
 	}
 }
 
+// TestOnlyPackDeclaresFinalSubject checks the boundary between intermediate artifacts and final image results.
 func TestOnlyPackDeclaresFinalSubject(t *testing.T) {
 	for _, name := range []string{"run-build", "run-build-remote"} {
 		results := taskSpec(t, name).Results
@@ -293,6 +330,7 @@ func TestOnlyPackDeclaresFinalSubject(t *testing.T) {
 	}
 }
 
+// TestExportVolumeContainsOnlyStagedBuildOutput keeps source and developer code off the private export volume.
 func TestExportVolumeContainsOnlyStagedBuildOutput(t *testing.T) {
 	for _, name := range []string{"run-build", "run-build-remote"} {
 		task := taskSpec(t, name)
@@ -311,6 +349,7 @@ func TestExportVolumeContainsOnlyStagedBuildOutput(t *testing.T) {
 	}
 }
 
+// TestInputArraysReachCLIAsSeparateArguments preserves artifact array expansion at the CLI boundary.
 func TestInputArraysReachCLIAsSeparateArguments(t *testing.T) {
 	for _, name := range []string{"run-build", "run-build-remote", "pack"} {
 		task := taskSpec(t, name)
@@ -333,6 +372,7 @@ func TestInputArraysReachCLIAsSeparateArguments(t *testing.T) {
 	}
 }
 
+// TestMatrixConsumesAllArtifactsWithPlatformOwnedConfiguration checks matrix aggregation and committed build settings.
 func TestMatrixConsumesAllArtifactsWithPlatformOwnedConfiguration(t *testing.T) {
 	pipeline := readResource(t, "pipelines/byob-matrix.yaml").Spec
 	build := findTask(t, pipeline, "build")
@@ -356,6 +396,7 @@ func TestMatrixConsumesAllArtifactsWithPlatformOwnedConfiguration(t *testing.T) 
 	}
 }
 
+// TestChainedBuildKeepsOriginalCheckoutAndSeparateOutputs checks source identity and output-only chaining.
 func TestChainedBuildKeepsOriginalCheckoutAndSeparateOutputs(t *testing.T) {
 	pipeline := readResource(t, "pipelines/byob-chained.yaml").Spec
 	build := findTask(t, pipeline, "build")
@@ -363,6 +404,7 @@ func TestChainedBuildKeepsOriginalCheckoutAndSeparateOutputs(t *testing.T) {
 	assertEqual(t, findParam(t, build.Params, "BUILD_ARTIFACTS").Value, []any{"$(tasks.codegen.results.BUILD_ARTIFACT)"})
 }
 
+// configuredPaC fills bundle digest placeholders for PaC example validation.
 func configuredPaC(t *testing.T) resource {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "examples/pac/push.yaml"))
@@ -376,6 +418,7 @@ func configuredPaC(t *testing.T) resource {
 	return parseResource(t, []byte(configured))
 }
 
+// TestPaCExampleUsesPinnedTasksAndLiteralMatrix checks bundle pins and committed matrix settings in the PaC example.
 func TestPaCExampleUsesPinnedTasksAndLiteralMatrix(t *testing.T) {
 	run := configuredPaC(t)
 	assertEqual(t, run.Kind, "PipelineRun")
@@ -397,6 +440,7 @@ func TestPaCExampleUsesPinnedTasksAndLiteralMatrix(t *testing.T) {
 	assertEqual(t, findParam(t, findTask(t, pipeline, "pack").Params, "BUILD_ARTIFACTS").Value, []any{"$(tasks.build.results.BUILD_ARTIFACT[*])"})
 }
 
+// TestPipelineCallersUseDeclaredLocalTaskParameters catches mismatched Task parameter names, types, and required inputs.
 func TestPipelineCallersUseDeclaredLocalTaskParameters(t *testing.T) {
 	pipelines := map[string]spec{}
 	for _, name := range []string{"byob", "byob-chained", "byob-remote", "byob-matrix"} {
@@ -438,7 +482,12 @@ func TestPipelineCallersUseDeclaredLocalTaskParameters(t *testing.T) {
 	}
 }
 
-func TestDeveloperCommandTreatsScriptPathAsDataAndPropagatesFailure(t *testing.T) {
+// TestDeveloperCommandExecutesArgvDirectly checks native execution, argument boundaries and exit status.
+func TestDeveloperCommandExecutesArgvDirectly(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for taskName, stepName := range map[string]string{"run-build": "build", "run-build-remote": "build-local"} {
 		t.Run(taskName, func(t *testing.T) {
 			step := findStep(t, taskSpec(t, taskName), stepName)
@@ -447,27 +496,44 @@ func TestDeveloperCommandTreatsScriptPathAsDataAndPropagatesFailure(t *testing.T
 			if err := os.Mkdir(source, 0755); err != nil {
 				t.Fatal(err)
 			}
-			name := "build; touch injected.sh"
-			if err := os.WriteFile(filepath.Join(source, name), []byte("#!/bin/sh\nexit 17\n"), 0755); err != nil {
-				t.Fatal(err)
-			}
-			command := slices.Clone(step.Command)
+			want := []string{"argument with spaces", "; touch injected.sh", "$(touch injected.sh)", "--leading-dash", "quote'\""}
+			argv := append([]string{executable, "__fixture_build__"}, want...)
+			command := []string{executable}
 			for _, arg := range step.Args {
-				command = append(command, strings.ReplaceAll(arg, "$(params.script-path)", name))
+				if arg == "$(params.build-cmd[*])" {
+					command = append(command, argv...)
+				} else {
+					arg = strings.ReplaceAll(arg, "/var/workdir/source", source)
+					command = append(command, strings.ReplaceAll(arg, "/var/workdir/home", filepath.Join(root, "home")))
+				}
 			}
 			if len(command) == 0 {
 				t.Fatal("developer step has no command")
 			}
 			cmd := exec.Command(command[0], command[1:]...)
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "HOME="+filepath.Join(root, "home"))
+			cmd.Env = append(os.Environ(), "BYOB_CATALOG_CLI=1")
 			output, err := cmd.CombinedOutput()
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != 17 {
 				t.Fatalf("developer command should exit 17; got %v: %s", err, output)
 			}
 			if _, err := os.Stat(filepath.Join(source, "injected.sh")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("script path was executed as shell source")
+				t.Fatal("command arguments were executed as shell source")
+			}
+			data, err := os.ReadFile(filepath.Join(source, "arguments.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			assertEqual(t, got, want)
+			assertEqual(t, step.Command, []string{"/var/build-tools/byob"})
+			tools := slices.IndexFunc(step.VolumeMounts, func(m mount) bool { return m.Name == "build-tools" })
+			if tools < 0 || !step.VolumeMounts[tools].ReadOnly {
+				t.Fatal("the staged launcher must be mounted read-only")
 			}
 		})
 	}
