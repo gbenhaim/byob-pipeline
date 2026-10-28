@@ -40,17 +40,21 @@ func SelectPlatform(sshDir, resultPath string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+
 	host, err := readValue(filepath.Join(sshDir, "host"))
 	if err != nil {
 		return err
 	}
+
 	if host == "" {
 		return errors.New("controller supplied an empty host")
 	}
+
 	mode := "remote"
 	if host == "localhost" {
 		mode = "local"
 	}
+
 	return os.WriteFile(resultPath, []byte(mode), 0o600)
 }
 
@@ -64,9 +68,11 @@ func RecordImage(mode, image, controlRoot, resultPath string) error {
 			return err
 		}
 	}
+
 	if !pinnedImage.MatchString(image) {
 		return errors.New("builder must use an immutable sha256 image reference")
 	}
+
 	separator := strings.LastIndexByte(image, '@')
 	data, err := json.Marshal(struct {
 		URI    string `json:"uri"`
@@ -75,6 +81,7 @@ func RecordImage(mode, image, controlRoot, resultPath string) error {
 	if err != nil {
 		return err
 	}
+
 	return os.WriteFile(resultPath, append(data, '\n'), 0o600)
 }
 
@@ -95,153 +102,304 @@ func Build(ctx context.Context, options BuildOptions) (result error) {
 		if result != nil && ctx.Err() != nil {
 			result = errors.Join(result, ctx.Err())
 		}
+
 	}()
-	if len(options.BuildCmd) == 0 || options.BuildCmd[0] == "" {
-		return errors.New("build command must contain a non-empty executable")
-	}
-	// Podman parses --entrypoint as JSON when possible. An explicit one-element
-	// array preserves executable names that themselves resemble JSON or shell text.
-	entrypoint, err := json.Marshal(options.BuildCmd[:1])
+	entrypoint, err := buildEntrypoint(options.BuildCmd)
 	if err != nil {
-		return fmt.Errorf("encode build executable: %w", err)
+		return err
 	}
+
 	host, err := readValue(filepath.Join(options.SSHDir, "host"))
 	if err != nil {
 		return err
 	}
+
 	if !validHost.MatchString(host) {
 		return errors.New("invalid SSH host")
 	}
+
 	if !pinnedImage.MatchString(options.BuilderImage) {
 		return errors.New("builder image must be digest-pinned")
 	}
+
 	base, err := readValue(filepath.Join(options.SSHDir, "user-dir"))
 	if err != nil {
 		return err
 	}
+
 	if !validBase.MatchString(base) || strings.Contains("/"+base+"/", "/../") {
 		return errors.New("invalid controller user-dir")
 	}
+
 	base = filepath.Clean(base)
+
 	if err := os.MkdirAll(options.ControlRoot, 0o700); err != nil {
 		return err
 	}
+
 	private, err := os.MkdirTemp("", "byob-ssh-")
 	if err != nil {
 		return err
 	}
+
 	defer func() { result = errors.Join(result, os.RemoveAll(private)) }()
-	if err := prepareKey(ctx, options.SSHDir, filepath.Join(private, "key")); err != nil {
-		return err
-	}
-	mode := "accept-new"
-	if knownHosts, err := os.ReadFile(filepath.Join(options.SSHDir, "known_hosts")); err == nil {
-		if err := os.WriteFile(filepath.Join(private, "known_hosts"), knownHosts, 0o600); err != nil {
-			return err
-		}
-		mode = "yes"
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	stdout, stderr := options.Stdout, options.Stderr
-	if stdout == nil {
-		stdout = os.Stdout
-	}
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-	// Several subprocesses can report errors concurrently during a transfer.
-	var outputLock sync.Mutex
-	stdout = lockedWriter{&outputLock, stdout}
-	stderr = lockedWriter{&outputLock, stderr}
-	session := sshSession{
-		args: []string{"-F", "/dev/null", "-i", filepath.Join(private, "key"),
-			"-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
-			"-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
-			"-o", "UserKnownHostsFile=" + filepath.Join(private, "known_hosts"),
-			"-o", "StrictHostKeyChecking=" + mode, host},
-		stderr: stderr,
-	}
-	directory, err := session.output(ctx, "mktemp -d "+quote(filepath.Join(base, "byob.XXXXXXXX")))
+	session, err := newSSHSession(ctx, options.SSHDir, private, host, options.Stdout, options.Stderr)
 	if err != nil {
-		return fmt.Errorf("create remote directory: %w", err)
+		return err
 	}
-	directory = strings.TrimRight(directory, "\n")
-	// Only accept one newly allocated child. Never use a server's unexpected
-	// response as the target of the deferred recursive deletion.
-	if filepath.Dir(directory) != base || !strings.HasPrefix(filepath.Base(directory), "byob.") || strings.ContainsAny(directory, "\r\n") {
-		return errors.New("invalid remote temporary directory")
+
+	directory, err := createRemoteWorkspace(ctx, session, base)
+	if err != nil {
+		return err
 	}
+
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := session.run(cleanupCtx, cleanupCommand(directory), nil, io.Discard); err != nil {
 			result = errors.Join(result, fmt.Errorf("clean up remote build: %w", err))
 		}
+
 	}()
-	if err := session.run(ctx, "mkdir -p "+quote(directory+"/source")+" "+quote(directory+"/inputs"), nil, io.Discard); err != nil {
-		return fmt.Errorf("create remote workspace: %w", err)
+
+	if err := createRemoteDirectories(ctx, session, directory); err != nil {
+		return err
 	}
-	for _, transfer := range []struct{ local, remote string }{
-		{options.SourceRoot, directory + "/source"},
-		{options.InputRoot, directory + "/inputs"},
-	} {
-		transferCtx, cancel := context.WithCancel(ctx)
-		tar := command(transferCtx, "tar", "-C", transfer.local, "-cf", "-", ".")
-		tar.Stderr = stderr
-		ssh := session.command(transferCtx, "tar -xf - -C "+quote(transfer.remote))
-		ssh.Stdout = stdout
-		err := pipeline(tar, ssh, cancel)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("transfer %s: %w", transfer.local, err)
-		}
+
+	if err := transferBuildInputs(ctx, session, options, directory); err != nil {
+		return err
 	}
-	args := quote(directory) + " " + quote(options.BuilderImage) + " " + quote(string(entrypoint))
-	for _, argument := range options.BuildCmd[1:] {
-		args += " " + quote(argument)
-	}
-	if err := session.run(ctx, "bash -s -- "+args, strings.NewReader(worker), stdout); err != nil {
-		return fmt.Errorf("remote build: %w", err)
-	}
-	image, err := session.output(ctx, "cat "+quote(directory+"/builder-image"))
+
+	image, err := runBuildCommand(ctx, session, options, entrypoint, directory)
 	if err != nil {
-		return fmt.Errorf("read remote builder image: %w", err)
+		return err
 	}
-	if !pinnedImage.MatchString(image) {
-		return errors.New("remote builder reported an invalid immutable image reference")
-	}
+
 	if err := os.WriteFile(filepath.Join(options.ControlRoot, "builder-image"), []byte(image), 0o600); err != nil {
 		return err
 	}
+
+	return returnBuildOutput(ctx, session, options.SourceRoot, directory)
+}
+
+// buildEntrypoint validates and encodes the executable as a one-element JSON array.
+func buildEntrypoint(command []string) ([]byte, error) {
+	if len(command) == 0 || command[0] == "" {
+		return nil, errors.New("build command must contain a non-empty executable")
+	}
+
+	// Podman parses --entrypoint as JSON when possible. An explicit one-element
+	// array preserves executable names that themselves resemble JSON or shell text.
+	entrypoint, err := json.Marshal(command[:1])
+	if err != nil {
+		return nil, fmt.Errorf("encode build executable: %w", err)
+	}
+
+	return entrypoint, nil
+}
+
+// newSSHSession prepares private credentials and fixed SSH options for one build.
+func newSSHSession(ctx context.Context, sshDir, privateDir, host string, stdout, stderr io.Writer) (sshSession, error) {
+	if err := prepareKey(ctx, sshDir, filepath.Join(privateDir, "key")); err != nil {
+		return sshSession{}, err
+	}
+
+	mode, err := prepareKnownHosts(sshDir, privateDir)
+	if err != nil {
+		return sshSession{}, err
+	}
+
+	stdout, stderr = lockOutputWriters(stdout, stderr)
+	session := sshSession{
+		args: []string{
+			"-F", "/dev/null", "-i", filepath.Join(privateDir, "key"),
+			"-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+			"-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
+			"-o", "UserKnownHostsFile=" + filepath.Join(privateDir, "known_hosts"),
+			"-o", "StrictHostKeyChecking=" + mode, host,
+		},
+		stdout: stdout,
+		stderr: stderr,
+	}
+
+	return session, nil
+}
+
+// prepareKnownHosts copies pinned host keys and returns the SSH verification mode.
+func prepareKnownHosts(sshDir, privateDir string) (string, error) {
+	knownHosts, err := os.ReadFile(filepath.Join(sshDir, "known_hosts"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "accept-new", nil
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(privateDir, "known_hosts")
+	if err := os.WriteFile(path, knownHosts, 0o600); err != nil {
+		return "", err
+	}
+
+	return "yes", nil
+}
+
+// lockOutputWriters selects defaults and serializes writes from parallel processes.
+func lockOutputWriters(stdout, stderr io.Writer) (io.Writer, io.Writer) {
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+
+	var outputLock sync.Mutex
+	return lockedWriter{&outputLock, stdout}, lockedWriter{&outputLock, stderr}
+}
+
+// createRemoteWorkspace requests a temporary child and validates it before cleanup uses its path.
+func createRemoteWorkspace(ctx context.Context, session sshSession, base string) (string, error) {
+	directory, err := session.output(ctx, "mktemp -d "+quote(filepath.Join(base, "byob.XXXXXXXX")))
+	if err != nil {
+		return "", fmt.Errorf("create remote directory: %w", err)
+	}
+
+	directory = strings.TrimRight(directory, "\n")
+
+	// Only accept one newly allocated child. Never use a server's unexpected
+	// response as the target of the deferred recursive deletion.
+	if filepath.Dir(directory) != base ||
+		!strings.HasPrefix(filepath.Base(directory), "byob.") ||
+		strings.ContainsAny(directory, "\r\n") {
+		return "", errors.New("invalid remote temporary directory")
+	}
+
+	return directory, nil
+}
+
+// createRemoteDirectories prepares separate source and artifact-input trees on the VM.
+func createRemoteDirectories(ctx context.Context, session sshSession, directory string) error {
+	script := "mkdir -p " + quote(directory+"/source") + " " + quote(directory+"/inputs")
+	if err := session.run(ctx, script, nil, io.Discard); err != nil {
+		return fmt.Errorf("create remote workspace: %w", err)
+	}
+
+	return nil
+}
+
+// transferBuildInputs sends the checkout and every restored artifact input to the VM.
+func transferBuildInputs(ctx context.Context, session sshSession, options BuildOptions, directory string) error {
+	transfers := []struct {
+		local  string
+		remote string
+	}{
+		{options.SourceRoot, directory + "/source"},
+		{options.InputRoot, directory + "/inputs"},
+	}
+
+	for _, transfer := range transfers {
+		if err := transferDirectory(ctx, session, transfer.local, transfer.remote); err != nil {
+			return fmt.Errorf("transfer %s: %w", transfer.local, err)
+		}
+	}
+
+	return nil
+}
+
+// transferDirectory streams one local directory to a remote directory using tar over SSH.
+func transferDirectory(ctx context.Context, session sshSession, local, remote string) error {
+	transferCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	tar := command(transferCtx, "tar", "-C", local, "-cf", "-", ".")
+	tar.Stderr = session.stderr
+	ssh := session.command(transferCtx, "tar -xf - -C "+quote(remote))
+	ssh.Stdout = session.stdout
+
+	return pipeline(tar, ssh, cancel)
+}
+
+// runBuildCommand starts the remote worker and validates the image digest it observed.
+func runBuildCommand(
+	ctx context.Context,
+	session sshSession,
+	options BuildOptions,
+	entrypoint []byte,
+	directory string,
+) (string, error) {
+	var arguments strings.Builder
+	arguments.WriteString(quote(directory))
+	arguments.WriteByte(' ')
+	arguments.WriteString(quote(options.BuilderImage))
+	arguments.WriteByte(' ')
+	arguments.WriteString(quote(string(entrypoint)))
+	for _, argument := range options.BuildCmd[1:] {
+		arguments.WriteByte(' ')
+		arguments.WriteString(quote(argument))
+	}
+
+	if err := session.run(ctx, "bash -s -- "+arguments.String(), strings.NewReader(worker), session.stdout); err != nil {
+		return "", fmt.Errorf("remote build: %w", err)
+	}
+
+	image, err := session.output(ctx, "cat "+quote(directory+"/builder-image"))
+	if err != nil {
+		return "", fmt.Errorf("read remote builder image: %w", err)
+	}
+
+	if !pinnedImage.MatchString(image) {
+		return "", errors.New("remote builder reported an invalid immutable image reference")
+	}
+
+	return image, nil
+}
+
+// returnBuildOutput stages the VM output on the source filesystem before replacing out/.
+func returnBuildOutput(ctx context.Context, session sshSession, sourceRoot, directory string) (result error) {
 	// Source and control are separate volumes in a Task. Stage on the source
 	// filesystem so the final output rename works across that volume boundary.
-	returned, err := os.MkdirTemp(options.SourceRoot, ".byob-returned-")
+	returned, err := os.MkdirTemp(sourceRoot, ".byob-returned-")
 	if err != nil {
 		return err
 	}
+
 	defer func() { result = errors.Join(result, os.RemoveAll(returned)) }()
+
 	transferCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	ssh := session.command(transferCtx, "tar -C "+quote(directory+"/output")+" -cf - .")
 	tar := command(transferCtx, "tar", "--no-same-owner", "-xf", "-", "-C", returned)
-	tar.Stderr = stderr
-	err = pipeline(ssh, tar, cancel)
-	cancel()
-	if err != nil {
+	tar.Stderr = session.stderr
+	if err := pipeline(ssh, tar, cancel); err != nil {
 		return fmt.Errorf("return build output: %w", err)
 	}
+
 	output := filepath.Join(returned, "out")
+	if err := validateReturnedOutput(output); err != nil {
+		return err
+	}
+
+	if err := os.RemoveAll(filepath.Join(sourceRoot, "out")); err != nil {
+		return err
+	}
+
+	return os.Rename(output, filepath.Join(sourceRoot, "out"))
+}
+
+// validateReturnedOutput requires the VM transfer to contain a real out directory.
+func validateReturnedOutput(output string) error {
 	info, err := os.Lstat(output)
 	if err != nil {
 		return err
 	}
+
 	if !info.IsDir() {
 		return errors.New("out/ must be a real directory")
 	}
-	if err := os.RemoveAll(filepath.Join(options.SourceRoot, "out")); err != nil {
-		return err
-	}
-	return os.Rename(output, filepath.Join(options.SourceRoot, "out"))
+
+	return nil
 }
 
 // readValue reads controller metadata while removing trailing line-feed delimiters.
@@ -254,60 +412,96 @@ func readValue(path string) (string, error) {
 func prepareKey(ctx context.Context, sshDir, destination string) error {
 	otp, err := os.ReadFile(filepath.Join(sshDir, "otp"))
 	if errors.Is(err, os.ErrNotExist) {
-		key, err := os.ReadFile(filepath.Join(sshDir, "id_rsa"))
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(destination, key, 0o600)
+		return copyControllerKey(sshDir, destination)
 	}
+
 	if err != nil {
 		return err
 	}
+
+	return exchangeOTP(ctx, sshDir, destination, otp)
+}
+
+// copyControllerKey installs the controller-provided SSH key with private permissions.
+func copyControllerKey(sshDir, destination string) error {
+	key, err := os.ReadFile(filepath.Join(sshDir, "id_rsa"))
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(destination, key, 0o600)
+}
+
+// exchangeOTP requests a private SSH key using the controller's one-time credential.
+func exchangeOTP(ctx context.Context, sshDir, destination string, otp []byte) error {
+	server, client, transport, err := newOTPClient(sshDir)
+	if err != nil {
+		return err
+	}
+
+	defer transport.CloseIdleConnections()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server, bytes.NewReader(otp))
+	if err != nil {
+		return errors.New("invalid OTP request")
+	}
+
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("exchange OTP: %w", err)
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("OTP server returned HTTP %d", response.StatusCode)
+	}
+
+	key, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	if err != nil {
+		return fmt.Errorf("read OTP key: %w", err)
+	}
+
+	if len(key) == 0 || len(key) > 1024*1024 {
+		return errors.New("OTP server returned an empty or oversized key")
+	}
+
+	return os.WriteFile(destination, append(key, '\n'), 0o600)
+}
+
+// newOTPClient validates the OTP endpoint and builds a client trusting only its supplied CA.
+func newOTPClient(sshDir string) (string, *http.Client, *http.Transport, error) {
 	server, err := readValue(filepath.Join(sshDir, "otp-server"))
 	if err != nil {
-		return err
+		return "", nil, nil, err
 	}
+
 	address, err := url.Parse(server)
 	if err != nil || address.Scheme != "https" || address.Host == "" || address.User != nil {
-		return errors.New("OTP server must be an HTTPS URL without user credentials")
+		return "", nil, nil, errors.New("OTP server must be an HTTPS URL without user credentials")
 	}
+
 	ca, err := os.ReadFile(filepath.Join(sshDir, "otp-ca"))
 	if err != nil {
-		return err
+		return "", nil, nil, err
 	}
+
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(ca) {
-		return errors.New("invalid OTP CA certificate")
+		return "", nil, nil, errors.New("invalid OTP CA certificate")
 	}
+
 	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
-	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   time.Minute,
 		// A one-time credential must never be forwarded to a redirected origin.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server, bytes.NewReader(otp))
-	if err != nil {
-		return errors.New("invalid OTP request")
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("exchange OTP: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("OTP server returned HTTP %d", response.StatusCode)
-	}
-	key, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
-	if err != nil {
-		return fmt.Errorf("read OTP key: %w", err)
-	}
-	if len(key) == 0 || len(key) > 1024*1024 {
-		return errors.New("OTP server returned an empty or oversized key")
-	}
-	return os.WriteFile(destination, append(key, '\n'), 0o600)
+
+	return server, client, transport, nil
 }
 
 // quote produces one POSIX shell argument. SSH always sends a command string to
@@ -325,6 +519,7 @@ func cleanupCommand(directory string) string {
 
 type sshSession struct {
 	args   []string
+	stdout io.Writer
 	stderr io.Writer
 }
 
@@ -362,6 +557,7 @@ func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 			return err
 		}
 	}
+
 	cmd.WaitDelay = 2 * time.Second
 	return cmd
 }
@@ -372,17 +568,20 @@ func pipeline(producer, consumer *exec.Cmd, cancel context.CancelFunc) error {
 	if err != nil {
 		return err
 	}
+
 	defer reader.Close()
 	defer writer.Close()
 	producer.Stdout, consumer.Stdin = writer, reader
 	if err := consumer.Start(); err != nil {
 		return err
 	}
+
 	if err := producer.Start(); err != nil {
 		cancel()
 		_ = consumer.Wait()
 		return err
 	}
+
 	// Only the child processes retain the pipe ends now.
 	_ = reader.Close()
 	_ = writer.Close()
@@ -393,6 +592,7 @@ func pipeline(producer, consumer *exec.Cmd, cancel context.CancelFunc) error {
 	if first != nil {
 		cancel()
 	}
+
 	return errors.Join(first, <-done)
 }
 

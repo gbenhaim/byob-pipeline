@@ -7,7 +7,7 @@ metadata:
   annotations:
     tekton.dev/pipelines.minVersion: 1.16.0
 spec:
-  description: Execute a repository script in a non-root developer image and export only out/ as a Trusted Artifact.
+  description: Execute a build command in a non-root developer image and export only out/ as a Trusted Artifact.
   params:
   - name: image
     type: string
@@ -15,9 +15,13 @@ spec:
     default: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
   - name: build-cmd
     type: array
-    description: Executable and arguments, run directly from the source directory without a shell.
+    description: Executable and fixed arguments, run directly without a shell.
     default:
     - ./build.sh
+  - name: build-args
+    type: array
+    description: Additional arguments appended to build-cmd without shell parsing.
+    default: []
   - name: SOURCE_ARTIFACT
     type: string
     description: Original checkout Trusted Artifact, restored independently for every build.
@@ -49,11 +53,11 @@ spec:
       seccompProfile:
         type: RuntimeDefault
   volumes:
+  - name: source
+    emptyDir: {}
   - name: workdir
     emptyDir: {}
   - name: build-output
-    emptyDir: {}
-  - name: build-tools
     emptyDir: {}
   - name: registry-auth
     secret:
@@ -67,10 +71,10 @@ spec:
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
     args:
     - use
-    - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+    - $(params.SOURCE_ARTIFACT)=/var/source
     volumeMounts:
-    - name: workdir
-      mountPath: /var/workdir
+    - name: source
+      mountPath: /var/source
     - name: registry-auth
       mountPath: /var/run/byob-registry-auth
       readOnly: true
@@ -98,38 +102,33 @@ spec:
   - name: prepare
     image: localhost/byob-cli:devel
     volumeMounts:
+    - name: source
+      mountPath: /var/source
     - name: workdir
       mountPath: /var/workdir
-    - name: build-tools
-      mountPath: /var/build-tools
     command:
     - /usr/local/bin/byob
     args:
     - prepare
-    - --source=/var/workdir/source
-    - --tools=/var/build-tools
+    - --source=/var/source
+    - --home=/var/workdir/home
   - name: build
     image: $(params.image)
     command:
-    - /var/build-tools/byob
-    args:
-    - exec-build
-    - --source=/var/workdir/source
-    - --home=/var/workdir/home
-    - --
     - $(params.build-cmd[*])
-    workingDir: /var/workdir
+    args:
+    - $(params.build-args[*])
+    workingDir: /var/source
     env:
     - name: HOME
       value: /var/workdir/home
     - name: BUILD_INPUTS
       value: /var/workdir/inputs
     volumeMounts:
+    - name: source
+      mountPath: /var/source
     - name: workdir
       mountPath: /var/workdir
-    - name: build-tools
-      mountPath: /var/build-tools
-      readOnly: true
     computeResources:
       requests:
         cpu: '1'
@@ -139,8 +138,8 @@ spec:
   - name: validate-output
     image: localhost/byob-cli:devel
     volumeMounts:
-    - name: workdir
-      mountPath: /var/workdir
+    - name: source
+      mountPath: /var/source
       readOnly: true
     - name: build-output
       mountPath: /var/build-output
@@ -148,7 +147,7 @@ spec:
     - /usr/local/bin/byob
     args:
     - stage-output
-    - --source=/var/workdir/source
+    - --source=/var/source
     - --output=/var/build-output
   - name: export
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327

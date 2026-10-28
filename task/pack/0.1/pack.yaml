@@ -7,7 +7,7 @@ metadata:
   annotations:
     tekton.dev/pipelines.minVersion: 1.16.0
 spec:
-  description: Pack one or several build outputs into an OCI artifact and attach its SPDX SBOM.
+  description: Pack one or several build outputs into an OCI artifact.
   params:
   - name: BUILD_ARTIFACTS
     type: array
@@ -30,9 +30,6 @@ spec:
   - name: IMAGE_DIGEST
     type: string
     value: $(steps.publish.results.IMAGE_DIGEST)
-  - name: SBOM_BLOB_URL
-    type: string
-    value: $(steps.publish.results.SBOM_BLOB_URL)
   stepTemplate:
     securityContext:
       runAsUser: 1000
@@ -87,17 +84,6 @@ spec:
     - --package=/var/workdir/package
     - --archive=/var/workdir/payload.tar.gz
     - --layout=$(params.layout)
-  - name: sbom
-    image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
-    command:
-    - syft
-    args:
-    - dir:/var/workdir/package
-    - -o
-    - spdx-json=/var/workdir/sbom.spdx.json
-    volumeMounts:
-    - name: workdir
-      mountPath: /var/workdir
   - name: publish
     image: localhost/byob-cli:devel
     workingDir: /var/workdir
@@ -112,8 +98,6 @@ spec:
       type: string
     - name: IMAGE_DIGEST
       type: string
-    - name: SBOM_BLOB_URL
-      type: string
     command:
     - /usr/local/bin/byob
     args:
@@ -124,4 +108,3 @@ spec:
     - --auth-dir=/var/run/byob-registry-auth
     - --url-result=$(step.results.IMAGE_URL.path)
     - --digest-result=$(step.results.IMAGE_DIGEST.path)
-    - --sbom-result=$(step.results.SBOM_BLOB_URL.path)

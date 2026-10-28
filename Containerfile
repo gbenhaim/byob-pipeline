@@ -8,7 +8,7 @@ RUN ["go", "build", "-trimpath", "-ldflags=-s -w", "-o", "/byob", "./cmd/byob"]
 
 FROM quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327 AS trusted-artifacts
 
-# The PoC reuses SSH, Bash, tar, ORAS, Syft and Cosign from task-runner.
+# The PoC reuses SSH, Bash, tar and ORAS from task-runner.
 FROM quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
 COPY --from=trusted-artifacts /usr/local/bin/use-archive /usr/local/bin/oras_opts.sh /usr/local/bin/select-oci-auth.sh /usr/local/bin/retry /usr/local/bin/
 COPY --from=build /byob /usr/local/bin/byob

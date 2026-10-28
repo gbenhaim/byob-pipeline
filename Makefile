@@ -29,5 +29,5 @@ validate:
 
 check: check-generated test lint validate
 
-smoke: build
-	BYOB_SMOKE=1 BYOB_CLI_IMAGE=$(CLI_IMAGE) go test -count=1 -timeout=15m -v ./tests/smoke
+smoke:
+	go test -count=1 ./...

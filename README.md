@@ -1,133 +1,108 @@
 # Bring-your-own-build pipelines
 
-A Tekton catalog implementing the pipeline portion of [ADR 73](https://github.com/konflux-ci/architecture/pull/387).
-Commit an executable `build.sh` that writes deliverables into `out/`. The pipeline
-checks out the reviewed source, executes the script, and packages its output as an
-OCI artifact with an SPDX SBOM. The default builder is digest-pinned Konflux
-`task-runner`; another image and build command can be literals in the committed
-PipelineRun.
-
-Trusted Task logic lives in the PoC `byob` Go CLI. The Tasks call its subcommands
-for validation, input restoration, packaging, publication, and remote execution.
+A Tekton catalog for the build portion of [ADR 73](https://github.com/konflux-ci/architecture/pull/387). It checks out an exact source revision, runs a configured build command, and publishes the contents of `out/` as an OCI artifact. Trusted Tasks use the PoC Go CLI; the developer image only needs the build executable and its runtime.
 
 ## Pipelines
 
-| Pipeline | Behavior |
-| --- | --- |
-| `byob` | Checkout → local `run-build` → `pack`. |
-| `byob-remote` | Checkout → generated `run-build-remote` → `pack`; the controller can select localhost. |
-| `byob-matrix` | Checkout once → one build per platform → one artifact containing platform directories. |
-| `byob-chained` | Checkout → `scripts/generate.sh` → `build.sh` → `pack`. |
+- **`byob`** — checkout, build locally, package.
+- **`byob-remote`** — build through the multi-platform controller, locally or
+  on a remote VM.
+- **`byob-matrix`** — build once per platform and package outputs under
+  platform directories such as `linux-amd64/`.
+- **`byob-chained`** — run `scripts/generate.sh`, then `build.sh`, passing the
+  first step’s outputs to the next.
 
-The matrix example uses literal `linux/amd64` and `linux/arm64` values. Configure
-the multi-platform controller's `local-platforms` and `dynamic-platforms` to map
-them to in-cluster execution and dedicated remote VMs respectively. `localhost`
-is supported, without SSH or Podman in the local path. Mixed local/remote matrix
-runs produce `linux-amd64/` and `linux-arm64/` directories in the final archive.
-Result order is immaterial: trusted export code records the platform in each
-build artifact after the build. All matrix builds must succeed before packaging.
+## Build contract
 
-## Task contract
+Commit an executable `build.sh` that writes at least one regular file to `out/`.
+The default `build-cmd` is `["./build.sh"]`; it selects the executable and any
+fixed leading arguments. Set the separate `build-args` array on the
+PipelineTask to append arguments to that command. Each array element is passed
+as one argv entry, directly from the restored checkout at `/var/source`,
+without shell parsing. The selected image must contain the command and its
+runtime dependencies. Builds may fetch dependencies.
 
-- `run-build` takes `image`, `build-cmd`, checkout's `SOURCE_ARTIFACT`, and
-  platform-owned `ociStorage`/`ociArtifactExpiresAfter`. It emits `BUILD_ARTIFACT`
-  containing only `out/`, plus platform metadata for matrix builds. The source
-  tree, build scripts, and caches outside `out/` are never re-exported.
-  `run-build-remote` additionally takes `PLATFORM`.
-- A chained step restores the original `SOURCE_ARTIFACT` and accepts preceding
-  outputs through the optional `BUILD_ARTIFACTS` array (default: `[]`). Each input
-  is restored separately at `$BUILD_INPUTS/<index>/out/` in array order, starting
-  at zero, on local and remote builders. For example, the first input is at
-  `/var/workdir/inputs/0/out/`. Each step writes its own deliverables to `out/`;
-  it must copy any preceding outputs it wants to retain. The chained example
-  demonstrates this. The output result remains the string `BUILD_ARTIFACT`.
-- `build-cmd` is an argument array, defaulting to `["./build.sh"]`. For example,
-  `["make", "build"]` or `["/usr/local/bin/builder", "--release"]` executes directly
-  from `/var/workdir/source`. Arguments are literal, without shell parsing.
-  The developer image needs the selected executable and its own runtime dependencies;
-  neither Bash nor `sh` is required. The image's entrypoint and default command are
-  overridden. Builds run as UID 1000/GID 0 with dropped capabilities and no
-  privilege escalation, with writable `HOME=/var/workdir/home`.
-- A static launcher is staged in a separate volume and mounted read-only by the
-  local developer step. It sets the working directory after source restoration
-  and replaces itself with the build executable. Remote Podman executes the same
-  argument array directly. Source preparation validates the source tree; it does
-  not require the build executable to be a repository script.
-- Builds may fetch dependencies. Escaping source/output symlinks and special
-  files are rejected. No cache or PVC is shared between runs.
-- After the script finishes, `validate-output` checks only `out/` and copies it
-  into a separate volume mounted only by trusted validation/export steps. Output
-  must be a real directory with at least one regular file; symlinks must stay
-  within `out/`. The remote launcher returns only `out/` from the VM.
-- `pack` accepts an **array** named `BUILD_ARTIFACTS`. `layout: flat` requires one
-  artifact; `layout: platform` combines matrix outputs. `layout` is platform-owned.
-  Each build artifact contains nonempty `out/` with regular files and optional safe
-  relative symlinks. Packaging never executes source files.
-- The default OCI `artifactType` is `application/vnd.konflux.build-output.v1` with
-  a deterministic `application/vnd.oci.image.layer.v1.tar+gzip` layer. Formats may
-  set a different literal `artifactType` in the committed PipelineRun.
-- Only `pack` emits `IMAGE_URL`/`IMAGE_DIGEST`. Its `SBOM_BLOB_URL` identifies the
-  attached SPDX JSON blob. Pipeline source identity comes directly from checkout.
+For example, set `build-args` on the `build` PipelineTask like this:
 
-This output-only handoff is an intentional change from the ADR's original
-full-source `SOURCE_ARTIFACT` chain. Checkout still publishes the reviewed source
-once so the build Tasks can restore it. Every subsequent intermediate upload
-contains only build outputs and optional platform metadata; the final package
-contains the contents of `out/` without that metadata.
+```yaml
+- name: build-args
+  value:
+  - --target
+  - release
+```
 
-## Install and run
+Only validated files from `out/` are exported; source files and caches are not.
+Chained builds receive earlier outputs at `$BUILD_INPUTS/<index>/out/` and must
+copy any files they want to retain into their own `out/`. Packaging supports a
+flat layout for one build or a platform layout for matrix outputs. The default
+OCI artifact type is `application/vnd.konflux.build-output.v1`.
 
-Requires Tekton Pipelines 1.16+ with matrix/step-when support (`enable-api-fields:
-beta`), the bundles resolver, OCI registry access, and the platform setup below.
-Remote platforms additionally require the multi-platform controller and rootless
-Podman on the allocated VM, including its `--default-mounts-file` global option
-(used to disable automatic host-secret mounts). Developer images must be publicly pullable on the VM;
-credentials are not forwarded there.
+## Try it
 
-The Tasks currently reference the local PoC image `localhost/byob-cli:devel`.
-Build it with `make image`. Before installing on a cluster, push the image to your
-registry, replace that reference in the two authored Tasks with the published
-`repository@sha256:digest`, and run `make generate` to update the remote Task.
-The local tag is for development; it is not a published catalog image.
+Requires Tekton Pipelines 1.16+, beta API fields enabled for matrix and
+step-when support, the bundles resolver, and registry access. Remote builds also
+require the multi-platform controller, ephemeral VMs with rootless Podman, and
+controller mappings for the requested platforms. Configure remote Podman with
+`--default-mounts-file` to disable automatic host-secret mounts; developer images
+must be pullable without forwarded registry credentials. The controller must
+clean up VMs after completion or cancellation.
 
-The development Pipelines reference locally installed Tasks. Checkout already
-uses the upstream digest-pinned `git-clone-oci-ta` bundle. After configuring the
-platform prerequisites below, install the catalog in an explicitly chosen test
-namespace:
+The Tasks use `localhost/byob-cli:devel` for development. Build it with
+`make image`, push it to a registry reachable by the cluster, replace its
+reference in `task/run-build/0.1/run-build.yaml` and
+`task/pack/0.1/pack.yaml` with the published digest, then run `make generate`
+to refresh the generated remote Task.
+
+Choose an existing test namespace and install the example service accounts,
+Tasks, and Pipelines:
 
 ```sh
-BYOB_CONTEXT=YOUR_TEST_CONTEXT
-BYOB_NAMESPACE=YOUR_TEST_NAMESPACE
+export BYOB_CONTEXT=YOUR_TEST_CONTEXT
+export BYOB_NAMESPACE=YOUR_TEST_NAMESPACE
+
+kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
+  apply -f examples/platform/serviceaccounts.yaml
 kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
   apply --recursive -f task/ -f pipelines/
 mkdir -p dist
 cp examples/pipelineruns/byob.yaml dist/run.yaml
 ```
 
-Edit `dist/run.yaml` to replace every `YOUR_*` and `REPLACE_WITH_*` value with your
-repository, exact source commit, registry destinations, and a unique output tag.
-`examples/pipelineruns/` also includes remote, matrix, and chained runs. Change
-build images, command arrays, or platforms directly in the corresponding Pipeline
-YAML before installing it. Submit and inspect the run with:
+Replace the placeholders in `dist/run.yaml` with your repository, reviewed
+commit, registry destinations, and a unique output tag, then submit it:
 
 ```sh
-BYOB_RUN=$(kubectl --context "${BYOB_CONTEXT:?Set BYOB_CONTEXT}" \
-  --namespace "${BYOB_NAMESPACE:?Set BYOB_NAMESPACE}" \
-  create -f dist/run.yaml -o name)
 kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
-  wait --for=condition=Succeeded "$BYOB_RUN" --timeout=30m
-kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
-  get "$BYOB_RUN" -o yaml
+  create -f dist/run.yaml
 ```
 
-The final status should contain `IMAGE_URL`, `IMAGE_DIGEST`, `SBOM_BLOB_URL`, and
-`CHAINS-GIT_COMMIT`. Runs are retained for inspection. If a run fails or times
-out, inspect its TaskRun status and logs. Matrix tests also require the controller
-platform mapping described above.
+Other PipelineRun examples are in [examples/pipelineruns](examples/pipelineruns/).
+The matrix example uses `linux/amd64` and `linux/arm64`.
 
-## Publish bundles and configure PaC
+For a private HTTPS repository, create a `kubernetes.io/basic-auth` Secret in
+the PipelineRun namespace. It must contain `username` and `password` keys; use
+a read-only Git token as the password. For example, with credentials stored in
+files outside the repository:
 
-Publish the Tasks using `tkn` and your registry credentials:
+```sh
+kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
+  create secret generic git-source-credentials \
+  --type=kubernetes.io/basic-auth \
+  --from-file=username=/secure/path/git-username \
+  --from-file=password=/secure/path/read-only-git-token
+```
+
+Copy [byob-private.yaml](examples/pipelineruns/byob-private.yaml), fill its
+placeholders, and submit it in the same namespace. It binds the Secret to the
+optional `git-auth` workspace. For a private Pipelines-as-Code run, add the
+same `git-auth` workspace binding to the PipelineRun and ensure the Secret
+exists in that PipelineRun's namespace. Do not commit Secret data or credential
+files.
+
+## Publish for Pipelines-as-Code
+
+Push the Task bundles and use the digests in
+[examples/pac/push.yaml](examples/pac/push.yaml):
 
 ```sh
 BYOB_CATALOG=quay.io/YOUR_ORG/byob
@@ -138,107 +113,95 @@ for byob_task in run-build run-build-remote pack; do
 done
 ```
 
-Copy [examples/pac/push.yaml](examples/pac/push.yaml) to the component repository's
-`.tekton/push.yaml`. Replace `YOUR_*` and `REPLACE_WITH_*`, including the two bundle
-digest placeholders with the actual digests reported by their respective pushes.
-Keep `@sha256:` and use the 64 hexadecimal characters after it. The example embeds
-the matrix Pipeline with bundle references for every Task; it requires no locally
-installed Pipeline. For another scenario, copy its `spec` from `pipelines/` into
-`pipelineSpec` and replace local Task names with the same bundle resolver structure.
-
-Use a unique output tag per run. `oci-storage` must be a repository without a tag;
-the Tasks add unique per-TaskRun tags. Build image, script, platform list, artifact
-wiring, and artifact type are committed literals, not run-time override parameters.
-Publication is not signing or trusted-catalog admission.
-
-`examples/component` contains executable scripts for the simple and chained
-pipelines. Repository-specific Konflux component/application labels and PaC branch
-configuration should be set when onboarding the component.
+Copy the example to the component repository as `.tekton/push.yaml`, fill its
+placeholders, and commit it. It embeds the matrix Pipeline and resolves Tasks
+from bundles. Update the two bundle digest placeholders with the digests for
+`run-build-remote` and `pack`. Use a unique output tag for each run;
+`oci-storage` must be a repository without a tag.
 
 ## Required platform integration
 
-These manifests are a candidate catalog, **not a standalone SLSA certification**.
-Admission, release policy, signing, and controller deployment are outside this repo.
+The catalog supplies build workflow controls that support a SLSA Build L3
+deployment. It does not establish SLSA Build L3 or SLSA Source L4 by itself;
+those claims depend on the cluster, Chains, SCM, and Conforma assumptions below.
 
-- Use platform-owned service accounts with token automount disabled and no build
-  permission to patch TaskRun/PipelineRun status or read Chains signing keys.
-  `examples/platform/serviceaccounts.yaml` shows the account boundary.
-- Tekton's credential initializer mounts annotated service-account Secrets into
-  every step. The build account must not carry those Secrets. New trusted transfer
-  and publication steps explicitly mount `byob-registry-auth`, a
-  `kubernetes.io/dockerconfigjson` Secret; developer steps do not.
-- Unmodified upstream checkout uses ordinary Tekton credentials. Authenticated
-  deployments therefore require a **platform-owned TaskRun mutator** that selects
-  the credentialed checkout account only for its allowlisted bundle. Component
-  authors must not supply `taskRunSpecs` or pod overrides to achieve this.
-  Public Git plus a disposable anonymous registry can exercise development flows.
-- Native Tekton steps inherit internal control/result mounts. Step-owned export
-  results reduce result-file spoofing, but native step ordering is not a hostile
-  container termination boundary. Validate the local platform isolation model
-  before making Build L3 claims; these manifests do not solve that platform issue.
-- Actual remote builds require per-TaskRun ephemeral VMs, cleaned up by the
-  controller on completion/cancellation. Localhost uses the local isolation model.
-  Supplied `known_hosts` data enables strict SSH host verification; otherwise the
-  launcher uses an ephemeral accept-new host-key store, matching a trust-on-first-use
-  deployment assumption that operators must assess.
-- Chains automatically observes local developer step imageIDs. For remote Podman,
-  the trusted launcher records `BUILD_IMAGE_ARTIFACT_INPUTS`. On localhost this
-  result records the requested immutable input; the step imageID records execution.
-  Enable Chains deep inspection for matrix child TaskRuns. Index pins and selected
-  platform manifest digests may differ; policy must verify their relationship.
-- The future Conforma policy must allow the actual checkout identity
-  `git-clone-oci-ta`, the two BYOB Tasks, and `pack`, verify artifact chains including
-  checkout's `SOURCE_ARTIFACT`, chained `BUILD_ARTIFACTS` inputs and `BUILD_ARTIFACT`
-  results, and pack's array inputs, and require ADR-55 Source VSA evidence.
-  Admission must enforce the
-  reviewed literals and reject inline Tasks and execution overrides. New bundles
-  require the normal signing/review process before that policy can trust them.
+### Pipeline contribution
 
-## Development and tests
+- Checkout is requested at an exact source commit and exposes the repository
+  URL and commit for provenance. Trusted build Tasks run the developer command
+  as a non-root user, without privilege escalation or Linux capabilities.
+- The source checkout, build workspace, and exported output are kept in separate
+  volumes. Only validated files from `out/` are exported. Chained and matrix
+  handoffs contain build outputs and platform metadata, not the source tree or
+  caches. `pack` publishes the build outputs as the final OCI artifact.
+- These controls provide inputs for provenance and policy evaluation. The
+  pipeline itself does not generate provenance, sign it, or enforce source
+  review policy.
 
-Edit `task/run-build/0.1/run-build.yaml`, `task/pack/0.1/pack.yaml`, and `pipelines/`
-directly. The Cobra CLI lives in `cmd/byob` and `internal/`; the Go remote generator
-adds CLI invocations to the local Task. Run `make generate` after changing
-`run-build` or the remote generator; only
-`task/run-build-remote/0.1/run-build-remote.yaml` is generated.
-Commit that output with its source changes. Update examples when changing their
-corresponding Pipeline definitions.
+### Cluster and Chains assumptions
 
-```sh
-make build
-make generate
-make check
-make image
-make smoke
-```
+- The cluster runs Tekton, the multi-platform controller, and Chains, and owns
+  service accounts, registry credentials, VM allocation, and cleanup. Disable
+  token automount for build accounts; do not grant build workloads permission
+  to change TaskRun or PipelineRun status or read Chains signing keys. Keep
+  registry credentials out of developer build steps. For private Git checkout,
+  no credentialed ServiceAccount or TaskRun mutator is needed: bind the
+  namespace Secret through the PipelineRun's optional `git-auth` workspace.
+  The Pipelines map it only to checkout's `basic-auth` workspace; build Tasks
+  and remote VMs do not receive it.
+- Each build gets a clean, dedicated execution environment. For remote builds,
+  the controller provisions a fresh VM per TaskRun and removes it after success,
+  failure, or cancellation. The VM uses rootless Podman with automatic host
+  secret mounts disabled, and developer images are pulled without forwarding
+  registry credentials. If a matrix member uses the controller's `localhost`
+  path, the local execution path must provide equivalent isolation; mixed local
+  and remote matrices are suitable only when both paths meet this boundary.
+- This README assumes Chains runs in the pipeline cluster and generates and
+  signs provenance for the build. Configure it to bind the final OCI artifact
+  digest to the exact source URL and commit, approved Pipeline and Task
+  identities, builder image identities, and the Trusted Artifact input/output
+  chain. For remote builds, include the builder image identity recorded by the
+  trusted remote Task. For matrix builds, include and verify the child TaskRuns
+  and their relationship to the packaged output. Keep signing keys outside
+  build workloads.
 
-Go 1.27 and ShellCheck are needed for `make check`; the image and smoke targets
-also need rootless Podman. `make check` runs Go behavior, CLI, catalog and generator
-tests, formatting/vet, ShellCheck for retained shell code, generated Task drift,
-and Tekton 1.16 admission validation. There is no Python test dependency.
+### SCM assumptions for Source L4
 
-`Containerfile` builds with the digest-pinned Red Hat `hi/go:1.27` image and copies
-the binary into the pinned Konflux task-runner image, which supplies SSH, tar,
-ORAS, Syft, and Cosign. It also copies the upstream Trusted Artifacts restoration
-helpers so repository-specific registry authentication and retries stay upstream.
-The remote VM worker is a small Bash/Podman script embedded in the CLI; Bash is
-required on the VM, not in the developer image. No CLI installation is required
-in developer images or on VMs. `catalog-lock.yaml` records inspected upstream
-versions; it does not generate or override manifest pins.
+Source L4 comes from SCM controls, not from these Tasks. The source repository
+must preserve verifiable history and protect the reviewed branch or tag. Require
+two distinct reviewers for changes, prevent self-approval, and produce a signed
+Source Verification Attestation (Source VSA) for the exact commit the pipeline
+checks out. The pipeline reports that commit; it does not prove that the commit
+was reviewed under these rules.
 
-`make smoke` runs the Go integration test in `tests/smoke`, using the locally built
-CLI image, rootless Podman, and a temporary registry to exercise real Trusted
-Artifact tools, output packaging, and remote execution through a local SSH
-transport fixture. It pulls the pinned upstream images and does not contact a
-Kubernetes cluster. A separate native fixture image contains no shell and checks
-local/remote argument handling, writable HOME, and overriding the image's default
-command. A complete cluster check must additionally
-run the local and mixed-platform PipelineRuns in an explicitly selected test
-namespace, check their signed results, and verify VM cleanup after failure and
-cancellation; no configured cluster is used implicitly by these tools.
+### Conforma policy assumptions
 
-Use the development examples and commands under [Install and run](#install-and-run)
-for cluster testing. Use `byob-matrix.yaml` with a mixed controller configuration
-to exercise local and remote execution together. Inspect signed results and VM
-cleanup separately; successful PipelineRun completion does not certify Chains or
-release-policy behavior.
+Use the cluster's admission integration to evaluate policy before Task Pods
+start. It must allow only approved, immutable Task bundle references and
+platform-approved build literals, including the source revision, developer
+image, build command, build arguments, and output settings. Reject inline Tasks
+(`pipelineSpec.tasks[].taskSpec`) and runtime execution overrides such as
+`taskRunSpecs`, Pod or step overrides, and caller-selected service accounts.
+For private checkout, allow only approved Git repository URLs and Secret
+references bound to `git-auth`. This is where the platform prevents a
+PipelineRun from changing the reviewed execution plan or exposing credentials
+to Tasks other than checkout.
+
+Before release, evaluate the signed Chains provenance and Source VSA against the
+same policy. Require the provenance to identify the expected final artifact
+digest, source commit, Pipeline and Tasks, builder images, and all chained or
+matrix artifact relationships. Require the Source VSA to match that source
+commit. A successful PipelineRun alone is not evidence that these checks passed.
+
+See [examples/platform](examples/platform/) for the service-account example and
+[examples/pac](examples/pac/) for a PaC PipelineRun.
+
+## Development
+
+Use Go 1.27 and ShellCheck. `make check` runs Go tests, lint and formatting
+checks, generated-Task drift checks, and Tekton manifest validation. `make image`
+builds the local CLI image and requires rootless Podman.
+
+Edit the authored Tasks, Pipelines, or generator as needed.
+`task/run-build-remote/0.1/run-build-remote.yaml` is generated; run
+`make generate` after changing its source Task or generator.

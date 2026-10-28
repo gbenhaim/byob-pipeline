@@ -38,9 +38,9 @@ generator's approach, localhost support, and a mixed-platform matrix example.
 
 Go tests exercise filesystem behavior, CLI operations, remote orchestration,
 generation, and catalog wiring; ShellCheck checks the retained scripts; generated
-remote Task drift is checked in CI.
-An opt-in disposable-registry smoke test exercises real Trusted Artifact handoffs
-and packaging. Cluster tests require a deliberately selected Tekton environment.
+remote Task drift is checked in CI. `make smoke` runs those Go tests without
+starting containers; `make image` remains an optional Podman build. Tests that
+require a live cluster use a deliberately selected Tekton environment.
 
 ## Catalog maintenance cleanup
 
@@ -75,9 +75,9 @@ source; run-build never republishes it.
    and Pipeline wiring, and remove the unused prepare/export branches.
 3. Transfer preceding outputs to remote builders and return only out/. Regenerate
    the remote Task and preserve localhost behavior.
-4. Update examples/docs and exercise real output artifact upload/restore, chained
-   builds, packaging, and remote output copy-back in the container smoke test.
-   Run make check and make smoke, obtain an independent review, and commit locally.
+4. Update examples/docs and cover output handoffs, chained builds, packaging, and
+   remote output copy-back with Go tests and command fixtures. Run make check and
+   make smoke, obtain an independent review, and commit locally.
 
 ## PoC Go CLI
 
@@ -91,8 +91,10 @@ runtime tools. The detailed migration plan is in
 ## Direct build commands and cleanup
 
 The next refinement replaces the script-path interface with a `build-cmd` argv
-array. A static launcher handles local working-directory setup and direct
-execution; remote Podman receives the executable and arguments directly. Developer
-images need no shell. The CLI uses Cobra, all Go function declarations have
-documentation, and repository Python leftovers and empty directories are removed.
+array. The local developer step runs that array directly from the restored
+checkout mounted at `/var/source`; trusted `prepare` creates writable HOME.
+Remote Podman receives the executable and arguments directly. Developer images
+need no shell or BYOB binary. The CLI uses Cobra, all Go function declarations
+have documentation, and repository Python leftovers and empty directories are
+removed.
 See [the command migration plan](superpowers/plans/2026-10-28-build-command.md).

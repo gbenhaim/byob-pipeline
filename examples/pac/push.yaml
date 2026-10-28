@@ -36,13 +36,14 @@ spec:
     - name: oci-storage
       type: string
       description: Platform-owned Trusted Artifact repository, without tag.
+    workspaces:
+    - name: git-auth
+      optional: true
     results:
     - name: IMAGE_URL
       value: $(tasks.pack.results.IMAGE_URL)
     - name: IMAGE_DIGEST
       value: $(tasks.pack.results.IMAGE_DIGEST)
-    - name: SBOM_BLOB_URL
-      value: $(tasks.pack.results.SBOM_BLOB_URL)
     - name: CHAINS-GIT_URL
       value: $(tasks.checkout.results.CHAINS-GIT_URL)
     - name: CHAINS-GIT_COMMIT
@@ -65,6 +66,9 @@ spec:
         value: $(params.revision)
       - name: ociStorage
         value: $(params.oci-storage):$(context.pipelineRun.name)-checkout
+      workspaces:
+      - name: basic-auth
+        workspace: git-auth
     - name: build
       taskRef:
         resolver: bundles
@@ -81,6 +85,8 @@ spec:
       - name: build-cmd
         value:
         - ./build.sh
+      - name: build-args
+        value: []
       - name: SOURCE_ARTIFACT
         value: $(tasks.checkout.results.SOURCE_ARTIFACT)
       - name: ociStorage

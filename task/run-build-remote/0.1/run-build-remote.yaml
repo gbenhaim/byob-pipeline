@@ -16,8 +16,12 @@ spec:
           type: string
         - default:
             - ./build.sh
-          description: Executable and arguments, run directly from the source directory without a shell.
+          description: Executable and fixed arguments, run directly without a shell.
           name: build-cmd
+          type: array
+        - default: []
+          description: Additional arguments appended to build-cmd without shell parsing.
+          name: build-args
           type: array
         - description: Original checkout Trusted Artifact, restored independently for every build.
           name: SOURCE_ARTIFACT
@@ -63,15 +67,15 @@ spec:
     steps:
         - args:
             - use
-            - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+            - $(params.SOURCE_ARTIFACT)=/var/source
           env:
             - name: AUTHFILE
               value: /var/run/byob-registry-auth/config.json
           image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
           name: restore
           volumeMounts:
-            - mountPath: /var/workdir
-              name: workdir
+            - mountPath: /var/source
+              name: source
             - mountPath: /var/run/byob-registry-auth
               name: registry-auth
               readOnly: true
@@ -95,17 +99,17 @@ spec:
               readOnly: true
         - args:
             - prepare
-            - --source=/var/workdir/source
-            - --tools=/var/build-tools
+            - --source=/var/source
+            - --home=/var/workdir/home
           command:
             - /usr/local/bin/byob
           image: localhost/byob-cli:devel
           name: prepare
           volumeMounts:
+            - mountPath: /var/source
+              name: source
             - mountPath: /var/workdir
               name: workdir
-            - mountPath: /var/build-tools
-              name: build-tools
         - args:
             - select-platform
             - --ssh-dir=/ssh
@@ -122,13 +126,9 @@ spec:
               name: ssh
               readOnly: true
         - args:
-            - exec-build
-            - --source=/var/workdir/source
-            - --home=/var/workdir/home
-            - --
-            - $(params.build-cmd[*])
+            - $(params.build-args[*])
           command:
-            - /var/build-tools/byob
+            - $(params.build-cmd[*])
           computeResources:
             limits:
                 memory: 2Gi
@@ -143,26 +143,26 @@ spec:
           image: $(params.image)
           name: build-local
           volumeMounts:
+            - mountPath: /var/source
+              name: source
             - mountPath: /var/workdir
               name: workdir
-            - mountPath: /var/build-tools
-              name: build-tools
-              readOnly: true
           when:
             - input: $(steps.select-platform.results.MODE)
               operator: in
               values:
                 - local
-          workingDir: /var/workdir
+          workingDir: /var/source
         - args:
             - build-remote
             - --ssh-dir=/ssh
-            - --source=/var/workdir/source
+            - --source=/var/source
             - --inputs=/var/workdir/inputs
             - --control=/var/workdir/control
             - --image=$(params.image)
             - --
             - $(params.build-cmd[*])
+            - $(params.build-args[*])
           command:
             - /usr/local/bin/byob
           image: localhost/byob-cli:devel
@@ -171,6 +171,8 @@ spec:
             - mountPath: /ssh
               name: ssh
               readOnly: true
+            - mountPath: /var/source
+              name: source
             - mountPath: /var/workdir
               name: workdir
           when:
@@ -201,7 +203,7 @@ spec:
               name: workdir
         - args:
             - stage-output
-            - --source=/var/workdir/source
+            - --source=/var/source
             - --output=/var/build-output
             - --platform=$(params.PLATFORM)
           command:
@@ -209,8 +211,8 @@ spec:
           image: localhost/byob-cli:devel
           name: validate-output
           volumeMounts:
-            - mountPath: /var/workdir
-              name: workdir
+            - mountPath: /var/source
+              name: source
               readOnly: true
             - mountPath: /var/build-output
               name: build-output
@@ -238,11 +240,11 @@ spec:
               readOnly: true
     volumes:
         - emptyDir: {}
+          name: source
+        - emptyDir: {}
           name: workdir
         - emptyDir: {}
           name: build-output
-        - emptyDir: {}
-          name: build-tools
         - name: registry-auth
           secret:
             items:

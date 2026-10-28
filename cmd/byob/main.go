@@ -23,6 +23,7 @@ func main() {
 		if errors.As(err, &exit) && exit.ExitCode() > 0 {
 			os.Exit(exit.ExitCode())
 		}
+
 		os.Exit(1)
 	}
 }

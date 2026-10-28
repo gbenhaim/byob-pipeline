@@ -13,66 +13,117 @@ import (
 
 // main validates catalog resources against Tekton's configured admission types.
 func main() {
+	os.Exit(run(os.Args[1:]))
+}
+
+// run validates each requested file and returns a process status for the batch.
+func run(paths []string) int {
+	ctx := validationContext()
+	failed := false
+	for _, path := range paths {
+		if err := validateResource(ctx, path); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
+			failed = true
+			continue
+		}
+
+		fmt.Printf("valid: %s\n", path)
+	}
+
+	if failed {
+		return 1
+	}
+
+	return 0
+}
+
+// validationContext enables the beta Tekton fields used by this catalog.
+func validationContext() context.Context {
 	flags, err := config.NewFeatureFlagsFromMap(map[string]string{"enable-api-fields": "beta"})
 	if err != nil {
 		panic(err)
 	}
+
 	defaults, err := config.NewDefaultsFromMap(nil)
 	if err != nil {
 		panic(err)
 	}
-	ctx := config.ToContext(context.Background(), &config.Config{FeatureFlags: flags, Defaults: defaults})
-	failed := false
-	for _, path := range os.Args[1:] {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			panic(err)
-		}
-		var kind struct {
-			Kind string `json:"kind"`
-		}
-		if err := yaml.Unmarshal(data, &kind); err != nil {
-			panic(err)
-		}
-		switch kind.Kind {
-		case "Task":
-			var task v1.Task
-			if e := yaml.UnmarshalStrict(data, &task); e != nil {
-				err = e
-			} else if e := task.Validate(ctx); e != nil {
-				err = e
-			}
-		case "Pipeline":
-			var pipeline v1.Pipeline
-			if e := yaml.UnmarshalStrict(data, &pipeline); e != nil {
-				err = e
-			} else if e := pipeline.Validate(ctx); e != nil {
-				err = e
-			}
-		case "PipelineRun":
-			var run v1.PipelineRun
-			if e := yaml.UnmarshalStrict(data, &run); e != nil {
-				err = e
-			} else {
-				// The API server assigns a name before admission for generateName.
-				if run.Name == "" && run.GenerateName != "" {
-					run.Name = run.GenerateName + "check"
-				}
-				if e := run.Validate(ctx); e != nil {
-					err = e
-				}
-			}
-		default:
-			err = fmt.Errorf("unsupported kind %q", kind.Kind)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
-			failed = true
-		} else {
-			fmt.Printf("valid: %s\n", path)
-		}
+
+	return config.ToContext(
+		context.Background(),
+		&config.Config{FeatureFlags: flags, Defaults: defaults},
+	)
+}
+
+// validateResource decodes one catalog file and applies its matching Tekton admission rules.
+func validateResource(ctx context.Context, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
 	}
-	if failed {
-		os.Exit(1)
+
+	var header struct {
+		Kind string `json:"kind"`
 	}
+	if err := yaml.Unmarshal(data, &header); err != nil {
+		return err
+	}
+
+	switch header.Kind {
+	case "Task":
+		return validateTask(ctx, data)
+	case "Pipeline":
+		return validatePipeline(ctx, data)
+	case "PipelineRun":
+		return validatePipelineRun(ctx, data)
+	default:
+		return fmt.Errorf("unsupported kind %q", header.Kind)
+	}
+}
+
+// validateTask strictly decodes and validates one Tekton Task.
+func validateTask(ctx context.Context, data []byte) error {
+	var task v1.Task
+	if err := yaml.UnmarshalStrict(data, &task); err != nil {
+		return err
+	}
+
+	if err := task.Validate(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validatePipeline strictly decodes and validates one Tekton Pipeline.
+func validatePipeline(ctx context.Context, data []byte) error {
+	var pipeline v1.Pipeline
+	if err := yaml.UnmarshalStrict(data, &pipeline); err != nil {
+		return err
+	}
+
+	if err := pipeline.Validate(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validatePipelineRun strictly decodes and validates one Tekton PipelineRun.
+func validatePipelineRun(ctx context.Context, data []byte) error {
+	var pipelineRun v1.PipelineRun
+	if err := yaml.UnmarshalStrict(data, &pipelineRun); err != nil {
+		return err
+	}
+
+	// The API server assigns a name before admission for generateName.
+	if pipelineRun.Name == "" && pipelineRun.GenerateName != "" {
+		pipelineRun.Name = pipelineRun.GenerateName + "check"
+	}
+
+	if err := pipelineRun.Validate(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }
