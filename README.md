@@ -45,7 +45,7 @@ source artifact after the build. All matrix builds must succeed before packaging
 - Only `pack` emits `IMAGE_URL`/`IMAGE_DIGEST`. Its `SBOM_BLOB_URL` identifies the
   attached SPDX JSON blob. Pipeline source identity comes directly from checkout.
 
-## Install and render
+## Install and run
 
 Requires Tekton Pipelines 1.16+ with matrix/step-when support (`enable-api-fields:
 beta`), the bundles resolver, OCI registry access, and the platform setup below.
@@ -54,32 +54,66 @@ Podman on the allocated VM, including its `--default-mounts-file` global option
 (used to disable automatic host-secret mounts). Developer images must be publicly pullable on the VM;
 credentials are not forwarded there.
 
-For development, install the three Tasks from `task/*/0.1/*.yaml` and the desired
-definition from `pipelines/`. The checkout already references the upstream
-digest-pinned `git-clone-oci-ta` bundle. The other Task references in these
-development Pipelines are local names.
-
-For committed PaC runs, publish to a registry you control and render immutable
-Task references:
+The development Pipelines reference locally installed Tasks. Checkout already
+uses the upstream digest-pinned `git-clone-oci-ta` bundle. After configuring the
+platform prerequisites below, install the catalog in an explicitly chosen test
+namespace:
 
 ```sh
-python3 -m pip install -r requirements-dev.txt
-make check
-# These commands publish only when you explicitly run them:
-python3 hack/publish-bundles.py --registry-prefix quay.io/MY_ORG/byob \
-  --output dist/bundles.yaml
-python3 hack/render-run.py --pipeline byob-matrix --bundles dist/bundles.yaml \
-  --output-image quay.io/MY_ORG/component:BUILD_TAG \
-  --oci-storage quay.io/MY_ORG/component-ta \
-  --platform linux/amd64 --platform linux/arm64 > dist/push.yaml
+BYOB_CONTEXT=YOUR_TEST_CONTEXT
+BYOB_NAMESPACE=YOUR_TEST_NAMESPACE
+kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
+  apply --recursive -f task/ -f pipelines/
+mkdir -p dist
+cp examples/pipelineruns/byob.yaml dist/run.yaml
 ```
 
-Run the rendering command from this catalog and copy `dist/push.yaml` to the
-component's `.tekton/push.yaml`. Use a unique output tag per build (PaC template variables can be
-provided as literal CLI arguments). `oci-storage` must be a repository without a
-tag; the Tasks add unique per-TaskRun tags. Build image, script, platform list,
-artifact wiring, and artifact type are committed literals, not run-time override
-parameters. Publication is not signing or trusted-catalog admission.
+Edit `dist/run.yaml` to replace every `YOUR_*` and `REPLACE_WITH_*` value with your
+repository, exact source commit, registry destinations, and a unique output tag.
+`examples/pipelineruns/` also includes remote, matrix, and chained runs. Change
+build images, script paths, or platforms directly in the corresponding Pipeline
+YAML before installing it. Submit and inspect the run with:
+
+```sh
+BYOB_RUN=$(kubectl --context "${BYOB_CONTEXT:?Set BYOB_CONTEXT}" \
+  --namespace "${BYOB_NAMESPACE:?Set BYOB_NAMESPACE}" \
+  create -f dist/run.yaml -o name)
+kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
+  wait --for=condition=Succeeded "$BYOB_RUN" --timeout=30m
+kubectl --context "$BYOB_CONTEXT" --namespace "$BYOB_NAMESPACE" \
+  get "$BYOB_RUN" -o yaml
+```
+
+The final status should contain `IMAGE_URL`, `IMAGE_DIGEST`, `SBOM_BLOB_URL`, and
+`CHAINS-GIT_COMMIT`. Runs are retained for inspection. If a run fails or times
+out, inspect its TaskRun status and logs. Matrix tests also require the controller
+platform mapping described above.
+
+## Publish bundles and configure PaC
+
+Publish the Tasks using `tkn` and your registry credentials:
+
+```sh
+BYOB_CATALOG=quay.io/YOUR_ORG/byob
+BYOB_TAG=REPLACE_WITH_UNIQUE_CATALOG_TAG
+for byob_task in run-build run-build-remote pack; do
+  tkn bundle push "$BYOB_CATALOG/$byob_task:$BYOB_TAG" \
+    -f "task/$byob_task/0.1/$byob_task.yaml"
+done
+```
+
+Copy [examples/pac/push.yaml](examples/pac/push.yaml) to the component repository's
+`.tekton/push.yaml`. Replace `YOUR_*` and `REPLACE_WITH_*`, including the two bundle
+digest placeholders with the actual digests reported by their respective pushes.
+Keep `@sha256:` and use the 64 hexadecimal characters after it. The example embeds
+the matrix Pipeline with bundle references for every Task; it requires no locally
+installed Pipeline. For another scenario, copy its `spec` from `pipelines/` into
+`pipelineSpec` and replace local Task names with the same bundle resolver structure.
+
+Use a unique output tag per run. `oci-storage` must be a repository without a tag;
+the Tasks add unique per-TaskRun tags. Build image, script, platform list, artifact
+wiring, and artifact type are committed literals, not run-time override parameters.
+Publication is not signing or trusted-catalog admission.
 
 `examples/component` contains executable scripts for the simple and chained
 pipelines. Repository-specific Konflux component/application labels and PaC branch
@@ -124,23 +158,36 @@ Admission, release policy, signing, and controller deployment are outside this r
 
 ## Development and tests
 
-Edit `hack/render-catalog.py`, `scripts/`, or `task-generator/remote/`; then run
-`make generate`. Generated YAML is self-contained and committed. `make check`
-runs Python behavior tests, Go generator tests, ShellCheck, and generation drift
-checks, plus validation against Tekton 1.16's actual admission types. Go 1.26.4+,
-Python 3.11+, PyYAML, and ShellCheck are needed (the generator itself needs Go 1.23+).
+Edit `task/run-build/0.1/run-build.yaml`, `task/pack/0.1/pack.yaml`, and `pipelines/`
+directly, including their embedded scripts. These files are the source of truth.
+The three shell scripts in `task-generator/remote/scripts/` are inputs to the Go
+remote generator. Run `make generate` after changing `run-build` or the remote
+generator; only `task/run-build-remote/0.1/run-build-remote.yaml` is generated.
+Commit that output with its source changes. Update examples when changing their
+corresponding Pipeline definitions.
 
-`make smoke` uses rootless Podman and a temporary local registry to exercise the
+```sh
+python3 -m pip install -r requirements-dev.txt
+make generate
+make check
+```
+
+`make check` checks remote Task drift, runs Python behavior tests against the
+scripts extracted from Task YAML, Go generator tests, and ShellCheck, and validates
+Tasks, Pipelines, and example PipelineRuns against Tekton 1.16's admission types.
+Go 1.26.4+, Python 3.11+, PyYAML, and ShellCheck are needed (the generator itself
+needs Go 1.23+). `catalog-lock.yaml` records the upstream versions inspected during
+implementation; it does not generate or override the pins in the manifests.
+
+`make smoke` runs `tests/smoke.py`, using rootless Podman and a temporary local registry to exercise the
 real Trusted Artifact tools and output packaging. It pulls the pinned images and
 does not contact a Kubernetes cluster. A complete cluster check must additionally
 run the local and mixed-platform PipelineRuns in an explicitly selected test
 namespace, check their signed results, and verify VM cleanup after failure and
 cancellation; no configured cluster is used implicitly by these tools.
 
-`hack/test-cluster.py` submits and waits for a selected scenario, requiring explicit
-`--context`, `--namespace`, `--git-url`, `--revision`, `--output-image`,
-`--oci-storage`, and `--bundles` arguments. Choose `--pipeline byob-matrix` and
-repeat `--platform` to exercise a mixed controller configuration. The namespace
-must already have the documented platform prerequisites. Runs are retained for
-debugging; the helper verifies build results but does not certify Chains or release
-policy behavior.
+Use the development examples and commands under [Install and run](#install-and-run)
+for cluster testing. Use `byob-matrix.yaml` with a mixed controller configuration
+to exercise local and remote execution together. Inspect signed results and VM
+cleanup separately; successful PipelineRun completion does not certify Chains or
+release-policy behavior.

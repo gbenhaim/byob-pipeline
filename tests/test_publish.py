@@ -4,7 +4,8 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+from task_helpers import step
+
 DIGEST = "sha256:" + "a" * 64
 
 
@@ -26,9 +27,7 @@ class PublicationTests(unittest.TestCase):
         path.chmod(0o755)
 
     def publish(self, **extra):
-        path = ROOT / "scripts" / "publish-package.sh"
-        self.assertTrue(path.exists(), "missing publication helper")
-        script = path.read_text()
+        script = step("pack", "publish")["script"]
         for name in ("IMAGE_URL", "IMAGE_DIGEST", "SBOM_BLOB_URL"):
             script = script.replace(f"$(step.results.{name}.path)", str(self.root / name))
         return subprocess.run(["bash", "-c", script], cwd=self.root, env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "IMAGE": "localhost:5000/team/output:test", "ARTIFACT_TYPE": "application/vnd.konflux.build-output.v1", "REGISTRY_AUTH_DIR": str(self.root / "no-auth"), **extra}, capture_output=True, text=True)

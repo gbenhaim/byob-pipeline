@@ -4,12 +4,12 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+from task_helpers import step
 
 
 class RemoteTests(unittest.TestCase):
     def test_attached_container_cannot_consume_remaining_remote_shell_program(self):
-        script = (ROOT / "scripts/run-build-remote.sh").read_text().split("<<'REMOTE'\n", 1)[1].split("\nREMOTE\n", 1)[0]
+        script = step("run-build-remote", "build-remote")["script"].split("<<'REMOTE'\n", 1)[1].split("\nREMOTE\n", 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "source").mkdir()
@@ -44,7 +44,7 @@ esac
             self.assertEqual(os.readlink(root / "output/sub/parent-link"), "../output.txt")
 
     def test_supplied_known_hosts_uses_strict_verification(self):
-        script = (ROOT / "scripts/run-build-remote.sh").read_text().split("remote()", 1)[0]
+        script = step("run-build-remote", "build-remote")["script"].split("remote()", 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "host").write_text("fixture.invalid")

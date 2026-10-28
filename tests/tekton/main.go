@@ -1,4 +1,4 @@
-// Validate generated objects with the actual target Tekton admission types.
+// Validate catalog objects and examples with the actual target Tekton admission types.
 package main
 
 import (
@@ -52,8 +52,14 @@ func main() {
 			var run v1.PipelineRun
 			if e := yaml.UnmarshalStrict(data, &run); e != nil {
 				err = e
-			} else if e := run.Validate(ctx); e != nil {
-				err = e
+			} else {
+				// The API server assigns a name before admission for generateName.
+				if run.Name == "" && run.GenerateName != "" {
+					run.Name = run.GenerateName + "check"
+				}
+				if e := run.Validate(ctx); e != nil {
+					err = e
+				}
 			}
 		default:
 			err = fmt.Errorf("unsupported kind %q", kind.Kind)

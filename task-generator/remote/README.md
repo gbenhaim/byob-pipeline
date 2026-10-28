@@ -2,7 +2,8 @@
 
 Adapted from [container-build-catalog's remote generator](https://github.com/konflux-ci/container-build-catalog/tree/85e966730ae50688b7f37c98cce47c3de5bdeb33/task-generator/remote), licensed under Apache-2.0.
 
-`make generate` produces `run-build-remote` from the local Task. Do not edit the
+`make generate` produces only `run-build-remote` from the directly maintained
+local Task and the shell scripts in this directory's `scripts/`. Do not edit the
 generated YAML. The generator retains the upstream Task transformation approach,
 controller Secret naming, OTP protocol, and localhost behavior. It uses a smaller
 YAML-only Go dependency rather than the Kubernetes client stack.
@@ -25,6 +26,8 @@ Manual invocation:
 ```sh
 cd task-generator/remote
 go run . --task ../../task/run-build/0.1/run-build.yaml \
-  --remote-task ../../task/run-build-remote/0.1/run-build-remote.yaml \
-  --scripts ../../scripts
+  --remote-task ../../task/run-build-remote/0.1/run-build-remote.yaml
 ```
+
+`make check-generated` regenerates into a temporary file and compares it with the
+committed remote Task, without modifying either the local or remote manifest.

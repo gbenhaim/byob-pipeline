@@ -1,4 +1,3 @@
-import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -6,7 +5,7 @@ import tarfile
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+from task_helpers import step
 
 
 class FilesystemTests(unittest.TestCase):
@@ -15,10 +14,9 @@ class FilesystemTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def run_script(self, name, **env):
-        script = ROOT / "scripts" / name
-        self.assertTrue(script.exists(), f"missing implementation: {script}")
-        return subprocess.run(["python3", str(script)], env={**os.environ, **{k: str(v) for k, v in env.items()}}, capture_output=True, text=True)
+    def run_script(self, task_name, step_name, **env):
+        script = step(task_name, step_name)["script"]
+        return subprocess.run(["python3", "-c", script], env={**os.environ, **{k: str(v) for k, v in env.items()}}, capture_output=True, text=True)
 
     def source(self, name="source"):
         source = self.root / name
@@ -30,14 +28,14 @@ class FilesystemTests(unittest.TestCase):
     def test_script_path_accepts_spaces_and_internal_symlink(self):
         source = self.source()
         (source / "build script.sh").symlink_to("build.sh")
-        result = self.run_script("validate-source.py", SOURCE_ROOT=source, SCRIPT_PATH="./build script.sh", MODE="prepare")
+        result = self.run_script("run-build", "prepare", SOURCE_ROOT=source, SCRIPT_PATH="./build script.sh", MODE="prepare")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_script_rejects_absolute_traversal_and_missing_paths(self):
         source = self.source()
         for path in ("/bin/sh", "../build.sh", "foo/../build.sh", "missing", ""):
             with self.subTest(path=path):
-                result = self.run_script("validate-source.py", SOURCE_ROOT=source, SCRIPT_PATH=path, MODE="prepare")
+                result = self.run_script("run-build", "prepare", SOURCE_ROOT=source, SCRIPT_PATH=path, MODE="prepare")
                 self.assertNotEqual(result.returncode, 0)
 
     def test_source_rejects_sibling_prefix_symlink(self):
@@ -45,7 +43,7 @@ class FilesystemTests(unittest.TestCase):
         sibling = self.root / "source-evil"
         sibling.mkdir()
         (source / "escape").symlink_to(sibling)
-        result = self.run_script("validate-source.py", SOURCE_ROOT=source, SCRIPT_PATH="build.sh", MODE="prepare")
+        result = self.run_script("run-build", "prepare", SOURCE_ROOT=source, SCRIPT_PATH="build.sh", MODE="prepare")
         self.assertNotEqual(result.returncode, 0)
 
     def test_source_rejects_fifo_and_skip_marker(self):
@@ -55,13 +53,13 @@ class FilesystemTests(unittest.TestCase):
                 os.mkfifo(source / entry)
             else:
                 (source / entry).touch()
-            result = self.run_script("validate-source.py", SOURCE_ROOT=source, MODE="export", BUILD_PLATFORM="linux/arm64")
+            result = self.run_script("run-build", "validate-output", SOURCE_ROOT=source, MODE="export", BUILD_PLATFORM="linux/arm64")
             self.assertNotEqual(result.returncode, 0)
 
     def test_platform_marker_replaces_user_file(self):
         source = self.source()
         (source / ".konflux-platform").write_text("forged")
-        result = self.run_script("validate-source.py", SOURCE_ROOT=source, MODE="export", BUILD_PLATFORM="linux/arm64")
+        result = self.run_script("run-build-remote", "validate-output", SOURCE_ROOT=source, MODE="export", BUILD_PLATFORM="linux/arm64")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((source / ".konflux-platform").read_text(), "linux/arm64\n")
 
@@ -73,7 +71,7 @@ class FilesystemTests(unittest.TestCase):
         return source
 
     def package(self, layout):
-        return self.run_script("prepare-package.py", INPUT_ROOT=self.root / "inputs", PACKAGE_ROOT=self.root / "package", ARCHIVE_PATH=self.root / "payload.tar.gz", LAYOUT=layout)
+        return self.run_script("pack", "prepare", INPUT_ROOT=self.root / "inputs", PACKAGE_ROOT=self.root / "package", ARCHIVE_PATH=self.root / "payload.tar.gz", LAYOUT=layout)
 
     def test_matrix_package_maps_platforms_without_assuming_result_order(self):
         self.input_tree(0, "linux/arm64", "arm")

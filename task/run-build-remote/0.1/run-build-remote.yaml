@@ -87,9 +87,6 @@ spec:
             import re
             import sys
 
-            """Filesystem checks embedded in trusted Task scripts by hack/render-catalog.py."""
-            import os
-            from pathlib import Path
             import stat
 
 
@@ -370,9 +367,6 @@ spec:
             import re
             import sys
 
-            """Filesystem checks embedded in trusted Task scripts by hack/render-catalog.py."""
-            import os
-            from pathlib import Path
             import stat
 
 

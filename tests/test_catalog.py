@@ -1,5 +1,3 @@
-import copy
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +10,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CatalogTests(unittest.TestCase):
+    def test_embedded_scripts_pass_syntax_checks(self):
+        for name in ("run-build", "run-build-remote", "pack"):
+            for step in self.task(name)["spec"]["steps"]:
+                if "script" not in step:
+                    continue
+                with self.subTest(task=name, step=step["name"]):
+                    script = step["script"]
+                    if script.startswith("#!/usr/bin/env python3"):
+                        compile(script, f"{name}/{step['name']}", "exec")
+                    else:
+                        result = subprocess.run(["shellcheck", "-"], input=script, text=True, capture_output=True)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def task(self, name):
         path = ROOT / "task" / name / "0.1" / f"{name}.yaml"
         self.assertTrue(path.exists(), f"missing Task: {path}")

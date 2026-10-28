@@ -9,10 +9,11 @@ import tarfile
 import tempfile
 import uuid
 
-import yaml
+from task_helpers import ROOT, step, task
 
-ROOT = Path(__file__).resolve().parents[1]
-LOCK = yaml.safe_load((ROOT / "catalog-lock.yaml").read_text())
+RUNNER = step("pack", "prepare")["image"]
+TRUSTED_ARTIFACTS = step("run-build", "restore")["image"]
+BUILDER = next(p["default"] for p in task("run-build")["spec"]["params"] if p["name"] == "image")
 
 
 def run(command, **kwargs):
@@ -30,31 +31,30 @@ def main():
             shutil.copytree(ROOT / "examples/component", work / "source")
             (work / "inputs/0").mkdir(parents=True)
             common = ["podman", "run", "--rm", "--network", network, "--userns", "keep-id:uid=1000,gid=0", "--user", "1000:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-v", f"{work}:/var/workdir:Z"]
-            for image in (LOCK["task-runner"], LOCK["trusted-artifacts"]):
+            for image in set((BUILDER, RUNNER, TRUSTED_ARTIFACTS)):
                 run(["podman", "pull", "--quiet", image])
             print("Running the default developer image as UID 1000", flush=True)
-            local_task = yaml.safe_load((ROOT / "task/run-build/0.1/run-build.yaml").read_text())
-            build = next(step for step in local_task["spec"]["steps"] if step["name"] == "build")
+            build = step("run-build", "build")
             args = [value.replace("$(params.script-path)", "build.sh") for value in build["args"]]
-            run(common + ["--workdir", build["workingDir"], "-e", "HOME=/tmp/byob-home", "--entrypoint", build["command"][0], LOCK["task-runner"]] + args)
+            run(common + ["--workdir", build["workingDir"], "-e", "HOME=/tmp/byob-home", "--entrypoint", build["command"][0], BUILDER] + args)
             print("Round-tripping source through the real Trusted Artifacts tools", flush=True)
-            artifact = common + ["-e", "ORAS_OPTIONS=--plain-http", LOCK["trusted-artifacts"]]
+            artifact = common + ["-e", "ORAS_OPTIONS=--plain-http", TRUSTED_ARTIFACTS]
             run(artifact + ["create", "--store", "registry:5000/byob:source", "/var/workdir/source.ref=/var/workdir/source"])
             reference = (work / "source.ref").read_text()
             run(artifact + ["use", f"{reference}=/var/workdir/inputs/0"])
             assert (work / "inputs/0/out/hello.txt").read_bytes() == (work / "source/out/hello.txt").read_bytes()
-            run(["python3", str(ROOT / "scripts/prepare-package.py")], env={**os.environ, "INPUT_ROOT": str(work / "inputs"), "PACKAGE_ROOT": str(work / "package"), "ARCHIVE_PATH": str(work / "payload.tar.gz"), "LAYOUT": "flat"})
-            run(common + ["--entrypoint", "syft", LOCK["task-runner"], "dir:/var/workdir/package", "-o", "spdx-json=/var/workdir/sbom.spdx.json"])
+            run(["python3", "-c", step("pack", "prepare")["script"]], env={**os.environ, "INPUT_ROOT": str(work / "inputs"), "PACKAGE_ROOT": str(work / "package"), "ARCHIVE_PATH": str(work / "payload.tar.gz"), "LAYOUT": "flat"})
+            run(common + ["--entrypoint", "syft", RUNNER, "dir:/var/workdir/package", "-o", "spdx-json=/var/workdir/sbom.spdx.json"])
             print("Publishing the payload and SBOM to the disposable HTTP registry", flush=True)
-            script = (ROOT / "scripts/publish-package.sh").read_text()
+            script = step("pack", "publish")["script"]
             # Only the test registry transport changes; production keeps TLS enabled.
             script = script.replace("oras push", "oras push --plain-http").replace("cosign attach sbom", "cosign attach sbom --allow-http-registry")
             for name in ("IMAGE_URL", "IMAGE_DIGEST", "SBOM_BLOB_URL"):
                 script = script.replace(f"$(step.results.{name}.path)", f"/var/workdir/{name}")
             (work / "publish.sh").write_text(script)
-            run(common + ["--workdir", "/var/workdir", "-e", "IMAGE=registry:5000/byob:output", "-e", "ARTIFACT_TYPE=application/vnd.konflux.build-output.v1", "-e", "REGISTRY_AUTH_DIR=/no-auth", "--entrypoint", "/bin/bash", LOCK["task-runner"], "/var/workdir/publish.sh"])
+            run(common + ["--workdir", "/var/workdir", "-e", "IMAGE=registry:5000/byob:output", "-e", "ARTIFACT_TYPE=application/vnd.konflux.build-output.v1", "-e", "REGISTRY_AUTH_DIR=/no-auth", "--entrypoint", "/bin/bash", RUNNER, "/var/workdir/publish.sh"])
             digest = (work / "IMAGE_DIGEST").read_text()
-            manifest = run(common + ["--entrypoint", "oras", LOCK["task-runner"], "manifest", "fetch", "--plain-http", f"registry:5000/byob@{digest}"], capture_output=True)
+            manifest = run(common + ["--entrypoint", "oras", RUNNER, "manifest", "fetch", "--plain-http", f"registry:5000/byob@{digest}"], capture_output=True)
             assert json.loads(manifest.stdout)["artifactType"] == "application/vnd.konflux.build-output.v1"
             with tarfile.open(work / "payload.tar.gz") as archive:
                 assert archive.extractfile("hello.txt").read().startswith(b"Built on ")
@@ -71,13 +71,14 @@ def main():
             transport = bin_dir / "ssh"
             transport.write_text("#!/bin/bash\nset -eu\nwhile [[ $1 != builder@fixture.invalid ]]; do shift; done\nshift\nexec bash -c \"$1\"\n")
             transport.chmod(0o755)
-            remote_env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "SSH_DIR": str(ssh_dir), "SOURCE_ROOT": str(work / "source"), "CONTROL_ROOT": str(work / "control"), "BUILDER_IMAGE": LOCK["task-runner"], "SCRIPT_PATH": "build.sh"}
-            run(["bash", str(ROOT / "scripts/run-build-remote.sh")], env=remote_env)
+            remote_env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "SSH_DIR": str(ssh_dir), "SOURCE_ROOT": str(work / "source"), "CONTROL_ROOT": str(work / "control"), "BUILDER_IMAGE": BUILDER, "SCRIPT_PATH": "build.sh"}
+            remote_command = ["bash", "-c", step("run-build-remote", "build-remote")["script"]]
+            run(remote_command, env=remote_env)
             assert (work / "source/out/hello.txt").read_text().startswith("Built on ")
             assert "@sha256:" in (work / "control/builder-image").read_text()
             assert not list(remote_root.iterdir()), "remote scratch directory leaked"
             (work / "source/build.sh").write_text("#!/bin/sh\nexit 17\n")
-            failed = subprocess.run(["bash", str(ROOT / "scripts/run-build-remote.sh")], env=remote_env)
+            failed = subprocess.run(remote_command, env=remote_env)
             assert failed.returncode != 0, "failed remote script reported success"
             assert not list(remote_root.iterdir()), "failed build leaked remote scratch directory"
             print("Container smoke tests passed", flush=True)
