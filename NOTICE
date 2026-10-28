@@ -1,0 +1,8 @@
+The Go remote Task generator and SSH/OTP protocol are adapted from:
+  konflux-ci/container-build-catalog/task-generator/remote
+  commit 85e966730ae50688b7f37c98cce47c3de5bdeb33
+  Copyright 2022 The Tekton Authors, Apache License 2.0.
+
+The run-build Task is a new implementation. It does not vendor run-script-oci-ta.
+The git-clone-oci-ta Task and build-trusted-artifacts tools are consumed as
+digest-pinned upstream artifacts; their implementation remains upstream.
