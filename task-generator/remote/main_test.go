@@ -87,8 +87,8 @@ var _ = Describe("remote Task generator", func() {
 				"--inputs=/var/workdir/inputs",
 				"--control=/var/workdir/control",
 				"--image=$(params.image)",
+				"--command-file=/var/workdir/control/build-cmd",
 				"--",
-				"$(params.build-cmd[*])",
 				"$(params.build-args[*])",
 			},
 			"record-image": {

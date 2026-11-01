@@ -175,11 +175,60 @@ func Build(ctx context.Context, options BuildOptions) (result error) {
 		return err
 	}
 
-	if err := os.WriteFile(filepath.Join(options.ControlRoot, "builder-image"), []byte(image), 0o600); err != nil {
+	if err := returnBuildOutput(ctx, session, options.SourceRoot, directory); err != nil {
 		return err
 	}
 
-	return returnBuildOutput(ctx, session, options.SourceRoot, directory)
+	return os.WriteFile(filepath.Join(options.ControlRoot, "builder-image"), []byte(image), 0o600)
+}
+
+// WriteBuildCommand stores the trusted build argv for a later remote execution.
+func WriteBuildCommand(path string, command []string) error {
+	if path == "" {
+		return errors.New("build command file is required")
+	}
+
+	if len(command) == 0 || command[0] == "" {
+		return errors.New("build command must contain a non-empty executable")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(command)
+	if err != nil {
+		return fmt.Errorf("encode build command: %w", err)
+	}
+
+	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+// LoadBuildCommand reads the trusted build argv and appends caller arguments.
+// Positional arguments never replace a missing executable.
+func LoadBuildCommand(path string, args []string) ([]string, error) {
+	if path == "" {
+		return nil, errors.New("build command file is required")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read build command: %w", err)
+	}
+
+	var command []string
+	if err := json.Unmarshal(data, &command); err != nil {
+		return nil, fmt.Errorf("read build command: %w", err)
+	}
+
+	if len(command) == 0 || command[0] == "" {
+		return nil, errors.New("build command must contain a non-empty executable")
+	}
+
+	combined := make([]string, 0, len(command)+len(args))
+	combined = append(combined, command...)
+	combined = append(combined, args...)
+	return combined, nil
 }
 
 // buildEntrypoint validates and encodes the executable as a one-element JSON array.
@@ -225,15 +274,19 @@ func newSSHSession(ctx context.Context, sshDir, privateDir, host string, stdout,
 	return session, nil
 }
 
-// prepareKnownHosts copies pinned host keys and returns the SSH verification mode.
+// prepareKnownHosts copies pinned host keys and requires strict SSH verification.
 func prepareKnownHosts(sshDir, privateDir string) (string, error) {
 	knownHosts, err := os.ReadFile(filepath.Join(sshDir, "known_hosts"))
-	if errors.Is(err, os.ErrNotExist) {
-		return "accept-new", nil
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", errors.New("controller known_hosts is required")
+		}
+
+		return "", err
 	}
 
-	if err != nil {
-		return "", err
+	if len(bytes.TrimSpace(knownHosts)) == 0 {
+		return "", errors.New("controller known_hosts is required")
 	}
 
 	path := filepath.Join(privateDir, "known_hosts")

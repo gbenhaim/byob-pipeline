@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gbenhaim/byob-pipeline/internal/artifact"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -35,6 +36,34 @@ func TestRemote(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Remote Suite")
 }
+
+var _ = Describe("build command files", func() {
+	It("appends build arguments to the recorded executable", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "build-cmd")
+		Expect(WriteBuildCommand(path, []string{"./build.sh", "--config"})).To(Succeed())
+
+		got, err := LoadBuildCommand(path, []string{"release"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal([]string{"./build.sh", "--config", "release"}))
+	})
+
+	It("rejects an empty command when arguments are present", func() {
+		dir := GinkgoT().TempDir()
+		_, err := LoadBuildCommand(filepath.Join(dir, "missing"), []string{"./build.sh"})
+		Expect(err).To(HaveOccurred())
+
+		empty := filepath.Join(dir, "empty")
+		Expect(os.WriteFile(empty, []byte("[]\n"), 0o600)).To(Succeed())
+		_, err = LoadBuildCommand(empty, []string{"./build.sh"})
+		Expect(err).To(HaveOccurred())
+
+		blank := filepath.Join(dir, "blank")
+		Expect(os.WriteFile(blank, []byte("[\"\"]\n"), 0o600)).To(Succeed())
+		_, err = LoadBuildCommand(blank, []string{"./build.sh"})
+		Expect(err).To(HaveOccurred())
+		Expect(WriteBuildCommand(blank, []string{""})).To(HaveOccurred())
+	})
+})
 
 var _ = Describe("remote builds", func() {
 	Describe("platform selection", func() {
@@ -170,6 +199,38 @@ var _ = Describe("remote builds", func() {
 			f.assertCleaned(t, true)
 		})
 
+		It("requires pinned known hosts before SSH", func() {
+			t := GinkgoT()
+			f := newBuildFixture(t)
+			Expect(os.Remove(filepath.Join(f.options.SSHDir, "known_hosts"))).To(Succeed())
+
+			err := Build(context.Background(), f.options)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("known_hosts"))
+			assertMissing(t, filepath.Join(f.root, "ssh-config"))
+		})
+
+		It("does not transfer scrubbed git credentials", func() {
+			t := GinkgoT()
+			f := newBuildFixture(t)
+			secret := "secret-token"
+			Expect(os.MkdirAll(filepath.Join(f.options.SourceRoot, ".git"), 0o755)).To(Succeed())
+			write(t, filepath.Join(f.options.SourceRoot, ".git", "config"), "url = https://user:"+secret+"@github.com/org/repo.git\n")
+			write(t, filepath.Join(f.options.SourceRoot, ".git-credentials"), secret)
+			Expect(artifact.ScrubCredentials(f.options.SourceRoot)).To(Succeed())
+
+			Expect(Build(context.Background(), f.options)).To(Succeed())
+			archives, err := filepath.Glob(filepath.Join(f.root, "copied-archive.*"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(archives).NotTo(BeEmpty())
+			for _, archive := range archives {
+				Expect(string(read(t, archive))).NotTo(ContainSubstring(secret))
+			}
+
+			transferred := findArchiveHeader(t, f.root, "var/source/.git/config")
+			Expect(transferred.Name).To(Equal("var/source/.git/config"))
+		})
+
 		It("returns output across separate control and source filesystems", func() {
 			t := GinkgoT()
 			f := newBuildFixture(t)
@@ -239,35 +300,21 @@ var _ = Describe("remote builds", func() {
 			f := newBuildFixture(t)
 			Expect(Build(context.Background(), f.options)).To(Succeed())
 
-			archives, err := filepath.Glob(filepath.Join(f.root, "copied-archive.*"))
-			Expect(err).NotTo(HaveOccurred())
-			foundHome := false
-			for _, archive := range archives {
-				reader := tar.NewReader(bytes.NewReader(read(t, archive)))
-				for {
-					header, err := reader.Next()
-					if errors.Is(err, io.EOF) {
-						break
-					}
+			home := findArchiveHeader(t, f.root, "var/workdir/home/")
+			Expect(home.Typeflag).To(Equal(byte(tar.TypeDir)))
+			Expect(home.Mode).To(Equal(int64(0o700)))
+			Expect(home.Uid).To(Equal(1000))
+			Expect(home.Gid).To(Equal(0))
 
-					Expect(err).NotTo(HaveOccurred())
-					if err != nil {
-						return
-					}
+			source := findArchiveHeader(t, f.root, "var/source/private-source.txt")
+			Expect(source.Uid).To(Equal(1000))
+			Expect(source.Gid).To(Equal(0))
+			Expect(source.Mode).To(Equal(int64(0o600)))
 
-					if header.Name != "var/workdir/home/" {
-						continue
-					}
-
-					foundHome = true
-					Expect(header.Typeflag).To(Equal(byte(tar.TypeDir)))
-					Expect(header.Mode).To(Equal(int64(0o700)))
-					Expect(header.Uid).To(Equal(1000))
-					Expect(header.Gid).To(Equal(0))
-				}
-			}
-
-			Expect(foundHome).To(BeTrue(), "worker did not provide a HOME directory")
+			input := findArchiveHeader(t, f.root, "var/workdir/inputs/0/out/generated.txt")
+			Expect(input.Uid).To(Equal(1000))
+			Expect(input.Gid).To(Equal(0))
+			Expect(input.Mode).To(Equal(int64(0o600)))
 			assertFile(t, filepath.Join(f.root, "home-before-start"), "")
 			entries, err := os.ReadDir(filepath.Join(f.root, "received", "var", "workdir", "home"))
 			Expect(err).NotTo(HaveOccurred())
@@ -301,6 +348,7 @@ var _ = Describe("remote builds", func() {
 				Expect(Build(context.Background(), f.options)).To(HaveOccurred())
 				assertFile(t, filepath.Join(f.options.SourceRoot, "private-source.txt"), "must not change")
 				assertFile(t, filepath.Join(f.options.SourceRoot, "out", "existing.txt"), "keep existing output")
+				assertMissing(t, filepath.Join(f.options.ControlRoot, "builder-image"))
 				f.assertCleaned(t, mode != "not-rootless" && mode != "bad-digest")
 			},
 			Entry("container start failure", "start-failure"),
@@ -365,26 +413,16 @@ var _ = Describe("remote builds", func() {
 				if mode == "untrusted-ca" {
 					public, private, err := ed25519.GenerateKey(rand.Reader)
 					Expect(err).NotTo(HaveOccurred())
-					if err != nil {
-						return
-					}
 
 					template := &x509.Certificate{SerialNumber: big.NewInt(1), IsCA: true, BasicConstraintsValid: true,
 						KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
 					ca, err = x509.CreateCertificate(rand.Reader, template, template, public, private)
 					Expect(err).NotTo(HaveOccurred())
-					if err != nil {
-						return
-					}
 				}
 
 				write(t, filepath.Join(f.options.SSHDir, "otp-ca"), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca})))
 				err := Build(context.Background(), f.options)
 				Expect(err).To(HaveOccurred())
-				if err == nil {
-					return
-				}
-
 				Expect(err.Error()).NotTo(ContainSubstring("secret OTP"))
 				Expect(err.Error()).NotTo(ContainSubstring("secret diagnostic"))
 				assertMissing(t, filepath.Join(f.root, "ssh-config"))
@@ -458,6 +496,7 @@ func newBuildFixture(t GinkgoTInterface) buildFixture {
 	write(t, filepath.Join(f.options.SSHDir, "host"), "builder@fixture.invalid\n")
 	write(t, filepath.Join(f.options.SSHDir, "user-dir"), filepath.Join(root, "remote"))
 	write(t, filepath.Join(f.options.SSHDir, "id_rsa"), "fixture key")
+	write(t, filepath.Join(f.options.SSHDir, "known_hosts"), "fixture.invalid ssh-ed25519 fixture\n")
 	write(t, filepath.Join(f.options.SourceRoot, "private-source.txt"), "must not change")
 	write(t, filepath.Join(f.options.SourceRoot, "relative-links", "output.txt"), "expected output")
 	Expect(os.MkdirAll(filepath.Join(f.options.SourceRoot, "relative-links", "sub"), 0o755)).To(Succeed())
@@ -564,6 +603,30 @@ func assertFile(t GinkgoTInterface, path, want string) {
 	Expect(string(read(t, path))).To(Equal(want), "contents of %s", path)
 }
 
+// findArchiveHeader returns one member from the worker's copied tar archives.
+func findArchiveHeader(t GinkgoTInterface, root, name string) *tar.Header {
+	GinkgoHelper()
+	archives, err := filepath.Glob(filepath.Join(root, "copied-archive.*"))
+	Expect(err).NotTo(HaveOccurred())
+	for _, archive := range archives {
+		reader := tar.NewReader(bytes.NewReader(read(t, archive)))
+		for {
+			header, err := reader.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			Expect(err).NotTo(HaveOccurred())
+			if header.Name == name {
+				return header
+			}
+		}
+	}
+
+	Fail("missing archive member " + name)
+	return nil
+}
+
 // assertMissing checks that neither a regular path nor a dangling symlink exists.
 func assertMissing(t GinkgoTInterface, path string) {
 	GinkgoHelper()
@@ -626,7 +689,7 @@ case "$1" in
    if [[ -d $FIXTURE_ROOT/received/var/workdir/home ]]; then touch "$FIXTURE_ROOT/home-before-start"; fi
    if [[ $FIXTURE_MODE == start-failure ]]; then exit 42; fi
    if [[ $FIXTURE_MODE == wait ]]; then touch "$FIXTURE_ROOT/started"; sleep 60; fi
-   source=$FIXTURE_ROOT/received/var/workdir/source
+   source=$FIXTURE_ROOT/received/var/source
    printf mutated > "$source/private-source.txt"
    printf private > "$source/remote-only.txt"
    rm -rf "$source/out"

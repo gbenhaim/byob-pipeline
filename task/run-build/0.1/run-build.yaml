@@ -81,17 +81,21 @@ spec:
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
-  - name: restore-inputs
+  - name: prepare
     image: localhost/byob-cli:devel
     args:
-    - restore-inputs
-    - --root=/var/workdir/inputs
+    - prepare
+    - --inputs=/var/workdir/inputs
+    - --source=/var/source
+    - --home=/var/workdir/home
     - --
     - $(params.BUILD_ARTIFACTS[*])
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
     volumeMounts:
+    - name: source
+      mountPath: /var/source
     - name: workdir
       mountPath: /var/workdir
     - name: registry-auth
@@ -99,19 +103,18 @@ spec:
       readOnly: true
     command:
     - /usr/local/bin/byob
-  - name: prepare
+  - name: check-command
     image: localhost/byob-cli:devel
-    volumeMounts:
-    - name: source
-      mountPath: /var/source
-    - name: workdir
-      mountPath: /var/workdir
     command:
     - /usr/local/bin/byob
     args:
-    - prepare
-    - --source=/var/source
-    - --home=/var/workdir/home
+    - check-command
+    - --command-file=/var/workdir/control/build-cmd
+    - --
+    - $(params.build-cmd[*])
+    volumeMounts:
+    - name: workdir
+      mountPath: /var/workdir
   - name: build
     image: $(params.image)
     command:

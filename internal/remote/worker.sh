@@ -24,8 +24,8 @@ require_rootless_podman() {
 # Remove the container and its ID file when the worker exits.
 cleanup_container() {
 	if [[ -n "$CONTAINER_ID" ]]; then
-		podman rm -f "$CONTAINER_ID" >/dev/null
-		rm -f "$WORKER_DIR/container-id"
+		podman rm -f "$CONTAINER_ID" >/dev/null || true
+		rm -f "$WORKER_DIR/container-id" || true
 	fi
 }
 
@@ -51,7 +51,7 @@ create_builder_container() {
 			--tmpfs /run/secrets:rw,noexec,nosuid,nodev \
 			--http-proxy=false \
 			--entrypoint "$ENTRYPOINT" \
-			--workdir /var/workdir/source \
+			--workdir /var/source \
 			--env HOME=/var/workdir/home \
 			--env BUILD_INPUTS=/var/workdir/inputs \
 			"$BUILDER_IMAGE" \
@@ -86,8 +86,12 @@ copy_home() {
 # Copy the source checkout and indexed build inputs into the container.
 copy_build_inputs() {
 	copy_home
-	copy_directory "$WORKER_DIR/source" "/" 'flags=rh;s,^\.,var/workdir/source,'
-	copy_directory "$WORKER_DIR/inputs" "/" 'flags=rh;s,^\.,var/workdir/inputs,'
+	copy_directory "$WORKER_DIR/source" "/" \
+		'flags=rh;s,^\.,var/source,' \
+		--owner=1000 --group=0 --numeric-owner
+	copy_directory "$WORKER_DIR/inputs" "/" \
+		'flags=rh;s,^\.,var/workdir/inputs,' \
+		--owner=1000 --group=0 --numeric-owner
 }
 
 # Run the developer command and fail if its container exits unsuccessfully.
@@ -107,7 +111,8 @@ collect_build_output() {
 	mkdir "$WORKER_DIR/returned-source" "$WORKER_DIR/output"
 	# Copy the parent so Podman preserves an out/ symlink instead of following it.
 	# This snapshot stays on the VM; only out/ is transferred to the task pod.
-	podman cp "$CONTAINER_ID:/var/workdir/source/." "$WORKER_DIR/returned-source/"
+	podman cp "$CONTAINER_ID:/var/source/." \
+		"$WORKER_DIR/returned-source/"
 
 	local output_dir="$WORKER_DIR/returned-source/out"
 	if [[ ! -d "$output_dir" || -L "$output_dir" ]]; then

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,14 +16,220 @@ import (
 	"time"
 )
 
-// Prepare validates the restored source tree before it enters a developer image.
-// The build command is resolved later inside that image, where it will execute.
+// Prepare removes checkout credentials and validates the restored source tree
+// before it enters a developer image. The build command is resolved later inside
+// that image, where it will execute.
 func Prepare(source string) error {
+	if err := ScrubCredentials(source); err != nil {
+		return fmt.Errorf("source validation failed: %w", err)
+	}
+
 	if _, err := checkTree(source); err != nil {
 		return fmt.Errorf("source validation failed: %w", err)
 	}
 
 	return nil
+}
+
+// ScrubCredentials removes credential files from a checkout and strips HTTP
+// credentials from Git config. Repository history is left in place.
+func ScrubCredentials(source string) error {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("expected a real directory: %s", source)
+	}
+
+	var credentials, configs []string
+	err = filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || path == source {
+			return err
+		}
+
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+
+		relative = filepath.ToSlash(relative)
+		switch {
+		case entry.Name() == ".git-credentials" || entry.Name() == ".netrc" || relative == ".git/credentials":
+			credentials = append(credentials, path)
+		case relative == ".git/config" || strings.HasSuffix(relative, "/.git/config"):
+			configs = append(configs, path)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, path := range credentials {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+
+	for _, path := range configs {
+		if err := scrubGitConfig(path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// scrubGitConfig rewrites one Git config file without following a symlink.
+func scrubGitConfig(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to rewrite %s", path)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	updated := scrubGitConfigText(string(data))
+	if updated == string(data) {
+		return nil
+	}
+
+	return os.WriteFile(path, []byte(updated), info.Mode().Perm())
+}
+
+// scrubGitConfigText drops credential directives and HTTP userinfo.
+func scrubGitConfigText(text string) string {
+	lines := strings.Split(text, "\n")
+	section := ""
+	rewritten := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section = gitSectionName(trimmed)
+			rewritten = append(rewritten, scrubQuotedURLs(line))
+			continue
+		}
+
+		indent, key, value, ok := splitGitAssignment(line)
+		if !ok {
+			rewritten = append(rewritten, line)
+			continue
+		}
+
+		lower := strings.ToLower(key)
+		if lower == "extraheader" || (section == "credential" && lower == "helper") {
+			continue
+		}
+
+		if cleaned, changed := scrubConfiguredURL(value); changed {
+			rewritten = append(rewritten, indent+key+" = "+cleaned)
+			continue
+		}
+
+		rewritten = append(rewritten, line)
+	}
+
+	return strings.Join(rewritten, "\n")
+}
+
+// gitSectionName returns the lowercase name from a Git config section header.
+func gitSectionName(header string) string {
+	header = strings.TrimSpace(header)
+	header = strings.Trim(header, "[]")
+	header = strings.TrimSpace(header)
+	if index := strings.IndexAny(header, " \t\""); index >= 0 {
+		header = header[:index]
+	}
+
+	return strings.ToLower(strings.TrimSpace(header))
+}
+
+// splitGitAssignment separates an indented Git config key and value.
+func splitGitAssignment(line string) (string, string, string, bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	key, value, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return "", "", "", false
+	}
+
+	return line[:len(line)-len(trimmed)], strings.TrimSpace(key), strings.TrimSpace(value), true
+}
+
+// scrubQuotedURLs removes HTTP credentials from quoted URLs on one line.
+func scrubQuotedURLs(line string) string {
+	var rewritten strings.Builder
+	rest := line
+	for {
+		start := strings.IndexByte(rest, '"')
+		if start < 0 {
+			rewritten.WriteString(rest)
+			return rewritten.String()
+		}
+
+		end := strings.IndexByte(rest[start+1:], '"')
+		if end < 0 {
+			rewritten.WriteString(rest)
+			return rewritten.String()
+		}
+
+		end += start + 1
+		rewritten.WriteString(rest[:start])
+		inner := rest[start+1 : end]
+		if cleaned, ok := removeUserinfo(inner); ok {
+			rewritten.WriteString(`"` + cleaned + `"`)
+		} else {
+			rewritten.WriteString(rest[start : end+1])
+		}
+
+		rest = rest[end+1:]
+	}
+}
+
+// scrubConfiguredURL removes HTTP credentials from a possibly quoted config value.
+func scrubConfiguredURL(value string) (string, bool) {
+	quote := ""
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		quote = `"`
+		value = value[1 : len(value)-1]
+	}
+
+	cleaned, ok := removeUserinfo(value)
+	if !ok {
+		return "", false
+	}
+
+	return quote + cleaned + quote, true
+}
+
+// removeUserinfo strips credentials from HTTP URLs and from any URL that carries
+// a password. SSH URLs such as ssh://git@host keep their username.
+func removeUserinfo(value string) (string, bool) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User == nil || parsed.Host == "" || parsed.Scheme == "" {
+		return "", false
+	}
+
+	_, hasPassword := parsed.User.Password()
+	if parsed.Scheme != "http" && parsed.Scheme != "https" && !hasPassword {
+		return "", false
+	}
+
+	parsed.User = nil
+	return parsed.String(), true
 }
 
 // StageOutput copies only validated out/ contents into the private export tree.

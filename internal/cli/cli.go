@@ -32,19 +32,35 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	root.AddCommand(
 		newPrepareCommand(), newStageOutputCommand(),
 		newRestoreInputsCommand(), newPackCommand(), newPublishCommand(),
-		newSelectPlatformCommand(), newRecordImageCommand(), newRemoteBuildCommand(),
+		newSelectPlatformCommand(), newRecordImageCommand(),
+		newCheckCommandCommand(), newRemoteBuildCommand(),
 	)
 	return root.ExecuteContext(ctx)
 }
 
-// newPrepareCommand validates restored source and creates the writable build home.
+// newPrepareCommand restores build inputs, validates source, and creates HOME.
 func newPrepareCommand() *cobra.Command {
-	var source, home string
+	var inputs, source, home string
 	command := &cobra.Command{
-		Use:   "prepare",
-		Short: "Validate restored source and prepare the build home",
-		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
+		Use:   "prepare [flags] -- [ARTIFACT...]",
+		Short: "Restore build inputs, validate source, and prepare the build home",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			if inputs != "" {
+				if err := restoreInputs(
+					command.Context(),
+					inputs,
+					args,
+					false,
+					command.OutOrStdout(),
+					command.ErrOrStderr(),
+				); err != nil {
+					return err
+				}
+			} else if len(args) > 0 {
+				return fmt.Errorf("--inputs is required when artifact references are supplied")
+			}
+
 			if err := artifact.Prepare(source); err != nil {
 				return err
 			}
@@ -57,6 +73,7 @@ func newPrepareCommand() *cobra.Command {
 		},
 	}
 
+	command.Flags().StringVar(&inputs, "inputs", "", "artifact input restoration directory")
 	command.Flags().StringVar(&source, "source", "/var/source", "restored source directory")
 	command.Flags().StringVar(&home, "home", "/var/workdir/home", "build home directory to create")
 	return command
@@ -185,16 +202,38 @@ func newRecordImageCommand() *cobra.Command {
 	return command
 }
 
-// newRemoteBuildCommand forwards the developer argv to the VM worker while
-// keeping controller credentials and build parameters in separate options.
+// newCheckCommandCommand records the trusted build argv before either developer path.
+func newCheckCommandCommand() *cobra.Command {
+	var commandFile string
+	command := &cobra.Command{
+		Use:   "check-command [flags] -- COMMAND [ARG...]",
+		Short: "Record the trusted build argv",
+		Args:  requireBuildCommand,
+		RunE: func(_ *cobra.Command, args []string) error {
+			return remote.WriteBuildCommand(commandFile, args)
+		},
+	}
+
+	command.Flags().StringVar(&commandFile, "command-file", "/var/workdir/control/build-cmd", "recorded build argv")
+	return command
+}
+
+// newRemoteBuildCommand runs the recorded build argv on the VM and appends only
+// the arguments that follow --. Those arguments cannot replace the executable.
 func newRemoteBuildCommand() *cobra.Command {
 	var opts remote.BuildOptions
+	var commandFile string
 	command := &cobra.Command{
-		Use:   "build-remote [flags] -- COMMAND [ARG...]",
-		Short: "Run a build command on the controller's remote VM",
-		Args:  requireBuildCommand,
+		Use:   "build-remote [flags] [-- BUILD_ARG...]",
+		Short: "Run a recorded build command on the controller's remote VM",
+		Args:  requireBuildArguments,
 		RunE: func(command *cobra.Command, args []string) error {
-			opts.BuildCmd = args
+			var err error
+			opts.BuildCmd, err = remote.LoadBuildCommand(commandFile, args)
+			if err != nil {
+				return err
+			}
+
 			opts.Stdout, opts.Stderr = command.OutOrStdout(), command.ErrOrStderr()
 			return remote.Build(command.Context(), opts)
 		},
@@ -205,7 +244,17 @@ func newRemoteBuildCommand() *cobra.Command {
 	command.Flags().StringVar(&opts.InputRoot, "inputs", "/var/workdir/inputs", "indexed inputs directory")
 	command.Flags().StringVar(&opts.ControlRoot, "control", "/var/workdir/control", "trusted control directory")
 	command.Flags().StringVar(&opts.BuilderImage, "image", "", "digest-pinned developer image")
+	command.Flags().StringVar(&commandFile, "command-file", "/var/workdir/control/build-cmd", "recorded build argv")
 	return command
+}
+
+// requireBuildArguments keeps additional arguments behind the option terminator.
+func requireBuildArguments(command *cobra.Command, args []string) error {
+	if len(args) > 0 && command.ArgsLenAtDash() != 0 {
+		return fmt.Errorf("build arguments must follow --")
+	}
+
+	return nil
 }
 
 // requireBuildCommand requires an explicit argv boundary so developer flags

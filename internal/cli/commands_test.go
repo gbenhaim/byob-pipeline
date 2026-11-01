@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,6 +14,75 @@ import (
 
 var _ = Describe("CLI commands", func() {
 	Describe("prepare", func() {
+		It("restores artifact inputs before preparing source and home", func() {
+			fixtureCommand("use-archive", `destination=${1#*=}
+mkdir -p "$destination/out"
+printf restored > "$destination/out/input.txt"
+`)
+
+			source := GinkgoT().TempDir()
+			inputs := filepath.Join(GinkgoT().TempDir(), "inputs")
+			home := filepath.Join(GinkgoT().TempDir(), "home")
+			reference := "oci:registry.example/build@sha256:" + strings.Repeat("a", 64)
+
+			Expect(runCLI(
+				"prepare",
+				"--inputs="+inputs,
+				"--source="+source,
+				"--home="+home,
+				"--",
+				reference,
+			)).To(Succeed())
+
+			data, err := os.ReadFile(filepath.Join(inputs, "0", "out", "input.txt"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(Equal("restored"))
+
+			info, err := os.Stat(home)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.IsDir()).To(BeTrue())
+		})
+
+		It("removes git credentials from the checkout", func() {
+			source := GinkgoT().TempDir()
+			home := filepath.Join(GinkgoT().TempDir(), "home")
+			secret := "secret-token"
+			Expect(os.MkdirAll(filepath.Join(source, ".git"), 0o755)).To(Succeed())
+			config := "[remote \"origin\"]\n" +
+				"\turl = https://user:" + secret + "@github.com/org/repo.git\n" +
+				"\tfetch = +refs/heads/*:refs/remotes/origin/*\n" +
+				"[http]\n" +
+				"\textraheader = AUTHORIZATION: basic " + secret + "\n" +
+				"[credential]\n" +
+				"\thelper = store --file=/tmp/.git-credentials\n" +
+				"[url \"https://user:" + secret + "@github.com/\"]\n" +
+				"\tinsteadOf = https://github.com/\n" +
+				"[remote \"mirror\"]\n" +
+				"\turl = ssh://git@github.com/org/repo.git\n"
+			Expect(os.WriteFile(filepath.Join(source, ".git", "config"), []byte(config), 0o644)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(source, ".git-credentials"), []byte("https://user:"+secret+"@github.com\n"), 0o600)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(source, ".netrc"), []byte("password "+secret+"\n"), 0o600)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(source, "README"), []byte("keep\n"), 0o644)).To(Succeed())
+
+			Expect(runCLI("prepare", "--source="+source, "--home="+home)).To(Succeed())
+
+			rewritten, err := os.ReadFile(filepath.Join(source, ".git", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(rewritten)).NotTo(ContainSubstring(secret))
+			Expect(string(rewritten)).To(ContainSubstring("https://github.com/org/repo.git"))
+			Expect(string(rewritten)).To(ContainSubstring("fetch = +refs/heads/*:refs/remotes/origin/*"))
+			Expect(string(rewritten)).To(ContainSubstring("ssh://git@github.com/org/repo.git"))
+			Expect(string(rewritten)).NotTo(ContainSubstring("extraheader"))
+			Expect(string(rewritten)).NotTo(ContainSubstring("helper"))
+			_, err = os.Stat(filepath.Join(source, ".git-credentials"))
+			Expect(os.IsNotExist(err)).To(BeTrue())
+			_, err = os.Stat(filepath.Join(source, ".netrc"))
+			Expect(os.IsNotExist(err)).To(BeTrue())
+			readme, err := os.ReadFile(filepath.Join(source, "README"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(readme)).To(Equal("keep\n"))
+		})
+
 		It("creates the build home without changing the checkout", func() {
 			source := GinkgoT().TempDir()
 			home := filepath.Join(GinkgoT().TempDir(), "home")
@@ -19,9 +90,7 @@ var _ = Describe("CLI commands", func() {
 
 			info, err := os.Stat(home)
 			Expect(err).NotTo(HaveOccurred())
-			if info != nil {
-				Expect(info.IsDir()).To(BeTrue())
-			}
+			Expect(info.IsDir()).To(BeTrue())
 
 			entries, err := os.ReadDir(source)
 			Expect(err).NotTo(HaveOccurred())
@@ -47,7 +116,8 @@ var _ = Describe("CLI commands", func() {
 			}{
 				{args: []string{"--help"}, want: "build-remote"},
 				{args: []string{"prepare", "--help"}, want: "--home"},
-				{args: []string{"build-remote", "--help"}, want: "COMMAND"},
+				{args: []string{"check-command", "--help"}, want: "--command-file"},
+				{args: []string{"build-remote", "--help"}, want: "--command-file"},
 			}
 
 			for _, scenario := range scenarios {
@@ -60,16 +130,39 @@ var _ = Describe("CLI commands", func() {
 		})
 	})
 
-	Describe("build-remote arguments", func() {
-		It("requires an unambiguous executable command", func() {
-			for _, suffix := range [][]string{nil, {"--"}, {"--", ""}, {"./build"}} {
-				args := append([]string{"build-remote"}, suffix...)
-				err := runCLI(args...)
-				Expect(err).To(HaveOccurred(), "arguments %q should report a command error", args)
-				if err != nil {
-					Expect(err.Error()).To(ContainSubstring("command"), "arguments %q", args)
-				}
+	Describe("check-command", func() {
+		It("rejects a missing or empty executable", func() {
+			file := filepath.Join(GinkgoT().TempDir(), "build-cmd")
+			for _, args := range [][]string{
+				{"check-command", "--command-file=" + file},
+				{"check-command", "--command-file=" + file, "--"},
+				{"check-command", "--command-file=" + file, "--", ""},
+			} {
+				Expect(runCLI(args...)).To(HaveOccurred(), "arguments %q", args)
+				_, err := os.Stat(file)
+				Expect(os.IsNotExist(err)).To(BeTrue(), "arguments %q wrote %s", args, file)
 			}
+		})
+
+		It("records the build argv", func() {
+			file := filepath.Join(GinkgoT().TempDir(), "control", "build-cmd")
+			Expect(runCLI("check-command", "--command-file="+file, "--", "./build.sh", "--flag", "two words")).To(Succeed())
+
+			var got []string
+			Expect(json.Unmarshal(mustReadFile(file), &got)).To(Succeed())
+			Expect(got).To(Equal([]string{"./build.sh", "--flag", "two words"}))
+		})
+	})
+
+	Describe("build-remote arguments", func() {
+		It("does not accept build arguments as the executable", func() {
+			err := runCLI("build-remote", "--", "./build.sh")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("build command"))
+
+			err = runCLI("build-remote", "./build.sh")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("build arguments must follow --"))
 		})
 
 		It("rejects the removed script flag", func() {
@@ -78,18 +171,17 @@ var _ = Describe("CLI commands", func() {
 	})
 
 	It("reports a missing subcommand for an empty argument slice", func() {
-		originalArgs := os.Args
-		os.Args = []string{"embedding-process", "--help"}
-		DeferCleanup(func() {
-			os.Args = originalArgs
-		})
-
 		for _, args := range [][]string{nil, {}} {
 			err := runCLI(args...)
 			Expect(err).To(HaveOccurred())
-			if err != nil {
-				Expect(err.Error()).To(ContainSubstring("subcommand is required"))
-			}
+			Expect(err.Error()).To(ContainSubstring("subcommand is required"))
 		}
 	})
 })
+
+func mustReadFile(path string) []byte {
+	GinkgoHelper()
+	data, err := os.ReadFile(path)
+	Expect(err).NotTo(HaveOccurred())
+	return data
+}

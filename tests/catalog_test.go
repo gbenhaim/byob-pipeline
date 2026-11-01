@@ -228,8 +228,8 @@ func hasMount(mounts []mount, name string) bool {
 var _ = Describe("BYOB catalog", func() {
 	It("routes trusted Task operations through the CLI", func() {
 		operations := map[string]map[string]string{
-			"run-build":        {"restore-inputs": "restore-inputs", "prepare": "prepare", "validate-output": "stage-output"},
-			"run-build-remote": {"restore-inputs": "restore-inputs", "prepare": "prepare", "select-platform": "select-platform", "build-remote": "build-remote", "record-image": "record-image", "validate-output": "stage-output"},
+			"run-build":        {"prepare": "prepare", "check-command": "check-command", "validate-output": "stage-output"},
+			"run-build-remote": {"prepare": "prepare", "check-command": "check-command", "select-platform": "select-platform", "build-remote": "build-remote", "record-image": "record-image", "validate-output": "stage-output"},
 			"pack":             {"restore": "restore-inputs", "prepare": "pack", "publish": "publish"},
 		}
 
@@ -248,6 +248,55 @@ var _ = Describe("BYOB catalog", func() {
 				Expect(taskStep.Args[0]).To(Equal(command), "%s args = %v", stepName, taskStep.Args)
 			}
 		}
+	})
+
+	It("restores build inputs in the trusted prepare step", func() {
+		for _, taskName := range []string{"run-build", "run-build-remote"} {
+			By("checking " + taskName)
+			task := taskSpec(taskName)
+			prepare := findStep(task, "prepare")
+
+			Expect(prepare.Args).To(ContainElement("--inputs=/var/workdir/inputs"))
+			Expect(hasMount(prepare.VolumeMounts, "source")).To(BeTrue())
+			Expect(hasMount(prepare.VolumeMounts, "workdir")).To(BeTrue())
+			Expect(hasMount(prepare.VolumeMounts, "registry-auth")).To(BeTrue())
+
+			for _, taskStep := range task.Steps {
+				Expect(taskStep.Name).NotTo(Equal("restore-inputs"))
+			}
+		}
+	})
+
+	It("checks the build command before either developer path", func() {
+		for _, taskName := range []string{"run-build", "run-build-remote"} {
+			By("checking " + taskName)
+			task := taskSpec(taskName)
+			names := make([]string, 0, len(task.Steps))
+			for _, taskStep := range task.Steps {
+				names = append(names, taskStep.Name)
+			}
+
+			checkAt := slices.Index(names, "check-command")
+			Expect(checkAt).To(BeNumerically(">", slices.Index(names, "prepare")))
+			developer := "build"
+			if taskName == "run-build-remote" {
+				developer = "build-local"
+				Expect(checkAt).To(BeNumerically("<", slices.Index(names, "build-remote")))
+			}
+
+			Expect(checkAt).To(BeNumerically("<", slices.Index(names, developer)))
+			Expect(findStep(task, "check-command").Args).To(Equal([]string{
+				"check-command",
+				"--command-file=/var/workdir/control/build-cmd",
+				"--",
+				"$(params.build-cmd[*])",
+			}))
+		}
+
+		remoteBuild := findStep(taskSpec("run-build-remote"), "build-remote")
+		Expect(remoteBuild.Args).NotTo(ContainElement("$(params.build-cmd[*])"))
+		Expect(remoteBuild.Args).To(ContainElement("--command-file=/var/workdir/control/build-cmd"))
+		Expect(remoteBuild.Args).To(ContainElement("$(params.build-args[*])"))
 	})
 
 	It("keeps credentials away from developer steps", func() {
@@ -374,8 +423,8 @@ var _ = Describe("BYOB catalog", func() {
 				Expect(taskParam.Name).NotTo(Equal("BUILD_ARTIFACT"), "%s declares a scalar BUILD_ARTIFACT input", name)
 			}
 
-			stepName := "restore-inputs"
-			wantArgs := []string{"restore-inputs", "--root=/var/workdir/inputs", "--", "$(params.BUILD_ARTIFACTS[*])"}
+			stepName := "prepare"
+			wantArgs := []string{"prepare", "--inputs=/var/workdir/inputs", "--source=/var/source", "--home=/var/workdir/home", "--", "$(params.BUILD_ARTIFACTS[*])"}
 			if name == "pack" {
 				stepName = "restore"
 				wantArgs = []string{"restore-inputs", "--root=/var/workdir/inputs", "--require", "--", "$(params.BUILD_ARTIFACTS[*])"}
@@ -542,9 +591,6 @@ var _ = Describe("BYOB catalog", func() {
 	It("executes the developer argv directly from the mounted source directory", func() {
 		executable, err := os.Executable()
 		Expect(err).NotTo(HaveOccurred())
-		if err != nil {
-			return
-		}
 
 		for taskName, stepName := range map[string]string{"run-build": "build", "run-build-remote": "build-local"} {
 			By("checking " + taskName)
@@ -580,10 +626,6 @@ var _ = Describe("BYOB catalog", func() {
 			}
 
 			Expect(command).NotTo(BeEmpty())
-			if len(command) == 0 {
-				return
-			}
-
 			cmd := exec.Command(command[0], command[1:]...)
 			cmd.Dir = source
 			cmd.Env = append(os.Environ(), "HOME="+home)

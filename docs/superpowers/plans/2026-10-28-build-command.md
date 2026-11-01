@@ -6,11 +6,12 @@
 
 **Spec:** The user's five requested changes. Preserve Go 1.27, output-only handoffs, indexed artifact inputs, localhost/remote behavior, and credential separation.
 
-**Architecture:** `build-cmd` defaults to `["./build.sh"]`. The local developer step expands it directly into the container command array and sets `workingDir` to a source volume mounted at `/var/source`. Trusted `prepare` validates the checkout and creates writable HOME. Remote Podman directly overrides the developer image entrypoint with the executable and passes its remaining arguments. The VM worker can still use Bash on the VM; the developer container needs only its selected executable and any libraries/interpreter that executable itself uses.
+**Architecture:** `build-cmd` defaults to `["./build.sh"]`. The local developer step expands it directly into the container command array and sets `workingDir` to a source volume mounted at `/var/source`. Trusted `prepare` restores optional build inputs, validates the checkout, and creates writable HOME. Remote Podman directly overrides the developer image entrypoint with the executable and passes its remaining arguments. The VM worker can still use Bash on the VM; the developer container needs only its selected executable and any libraries/interpreter that executable itself uses.
 
 **Interfaces:**
 - `artifact.Prepare(source string) error` validates source only; the selected executable may live in the developer image.
-- `prepare --source=... --home=...` validates checkout and creates writable HOME.
+- `prepare --inputs=... --source=... --home=... -- [ARTIFACT...]` restores
+  optional build inputs, validates checkout, and creates writable HOME.
 - `remote.BuildOptions.BuildCmd []string` replaces `ScriptPath`.
 - Cobra `build-remote ... -- COMMAND ARG...` preserves argument boundaries for VM execution.
 

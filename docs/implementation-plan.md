@@ -92,7 +92,8 @@ runtime tools. The detailed migration plan is in
 
 The next refinement replaces the script-path interface with a `build-cmd` argv
 array. The local developer step runs that array directly from the restored
-checkout mounted at `/var/source`; trusted `prepare` creates writable HOME.
+checkout mounted at `/var/source`; trusted `prepare` restores optional build
+inputs, validates the checkout, and creates writable HOME.
 Remote Podman receives the executable and arguments directly. Developer images
 need no shell or BYOB binary. The CLI uses Cobra, all Go function declarations
 have documentation, and repository Python leftovers and empty directories are
