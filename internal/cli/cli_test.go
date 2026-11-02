@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,42 @@ func fixtureCommand(name, script string) {
 	Expect(err).NotTo(HaveOccurred())
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// childSSLCertFile runs restore-inputs and returns the SSL_CERT_FILE seen by use-archive.
+func childSSLCertFile(caFile, previous, ref string) string {
+	GinkgoT().Setenv("CA_FILE", caFile)
+	GinkgoT().Setenv("SSL_CERT_FILE", previous)
+	seen := filepath.Join(GinkgoT().TempDir(), "seen")
+	fixtureCommand("use-archive", fmt.Sprintf("printf '%%s' \"${SSL_CERT_FILE-}\" > %q\n", seen))
+	Expect(runCLI("restore-inputs", "--root="+GinkgoT().TempDir(), "--", ref)).To(Succeed())
+
+	data, err := os.ReadFile(seen)
+	Expect(err).NotTo(HaveOccurred())
+	return string(data)
+}
+
+// publishedSSLCertFile runs publish and returns the SSL_CERT_FILE seen by oras.
+func publishedSSLCertFile(caFile, previous, digest string) string {
+	GinkgoT().Setenv("CA_FILE", caFile)
+	GinkgoT().Setenv("SSL_CERT_FILE", previous)
+	root := GinkgoT().TempDir()
+	seen := filepath.Join(root, "seen")
+	script := fmt.Sprintf("printf '%%s' \"${SSL_CERT_FILE-}\" > %q\nprintf '%%s' '{\"digest\":\"%s\"}'\n", seen, digest)
+	fixtureCommand("oras", script)
+	Expect(os.WriteFile(filepath.Join(root, "payload.tar.gz"), []byte("payload"), 0644)).To(Succeed())
+	Expect(runCLI(
+		"publish",
+		"--workdir="+root,
+		"--image=localhost:5000/team/output:test",
+		"--url-result="+filepath.Join(root, "url"),
+		"--digest-result="+filepath.Join(root, "digest"),
+		"--auth-dir="+filepath.Join(root, "no-auth"),
+	)).To(Succeed())
+
+	data, err := os.ReadFile(seen)
+	Expect(err).NotTo(HaveOccurred())
+	return string(data)
 }
 
 // runCLI invokes the public CLI and writes captured output when it fails.
@@ -85,6 +122,21 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 			for _, value := range invalidReferences {
 				Expect(runCLI("restore-inputs", "--root="+GinkgoT().TempDir(), "--", value)).To(HaveOccurred(), "reference %q should be rejected", value)
 			}
+		})
+
+		It("gives use-archive a non-empty registry CA bundle", func() {
+			ca := filepath.Join(GinkgoT().TempDir(), "ca.crt")
+			Expect(os.WriteFile(ca, []byte("custom-ca"), 0644)).To(Succeed())
+			Expect(childSSLCertFile(ca, "/system/certs.pem", ref)).To(Equal(ca))
+		})
+
+		It("leaves the system trust store alone when the CA bundle is missing or empty", func() {
+			missing := filepath.Join(GinkgoT().TempDir(), "missing.crt")
+			Expect(childSSLCertFile(missing, "/system/certs.pem", ref)).To(Equal("/system/certs.pem"))
+
+			empty := filepath.Join(GinkgoT().TempDir(), "empty.crt")
+			Expect(os.WriteFile(empty, nil, 0644)).To(Succeed())
+			Expect(childSSLCertFile(empty, "/system/certs.pem", ref)).To(Equal("/system/certs.pem"))
 		})
 
 		It("stops restoring after an artifact restore fails", func() {
@@ -152,6 +204,21 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 				}
 			})
 		}
+
+		It("gives oras a non-empty registry CA bundle", func() {
+			ca := filepath.Join(GinkgoT().TempDir(), "ca.crt")
+			Expect(os.WriteFile(ca, []byte("custom-ca"), 0644)).To(Succeed())
+			Expect(publishedSSLCertFile(ca, "/system/certs.pem", digest)).To(Equal(ca))
+		})
+
+		It("leaves the system trust store alone when publishing without a CA bundle", func() {
+			missing := filepath.Join(GinkgoT().TempDir(), "missing.crt")
+			Expect(publishedSSLCertFile(missing, "/system/certs.pem", digest)).To(Equal("/system/certs.pem"))
+
+			empty := filepath.Join(GinkgoT().TempDir(), "empty.crt")
+			Expect(os.WriteFile(empty, nil, 0644)).To(Succeed())
+			Expect(publishedSSLCertFile(empty, "/system/certs.pem", digest)).To(Equal("/system/certs.pem"))
+		})
 	})
 
 	Describe("command arguments", func() {

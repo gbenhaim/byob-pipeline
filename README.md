@@ -99,6 +99,34 @@ same `git-auth` workspace binding to the PipelineRun and ensure the Secret
 exists in that PipelineRun's namespace. Do not commit Secret data or credential
 files.
 
+## System test
+
+`make system-test` runs the `byob` pipeline on a Kind cluster that already has
+Konflux installed. It is not part of `make check`. The default
+`BYOB_CLUSTER=existing` never installs or deletes the cluster. When more than
+one Kind cluster exists, set `BYOB_KIND_CLUSTER` to the cluster name.
+`BYOB_KUBE_CONTEXT` selects a context inside that cluster's kubeconfig.
+
+The test checks out a public GitHub commit and publishes to the cluster's
+internal registry at `registry-service.kind-registry`, the name on the Kind
+registry certificate. `BYOB_GIT_URL` defaults to
+`https://github.com/gbenhaim/byob-pipeline`. `BYOB_GIT_REF` defaults to the
+current local branch. That ref must already be pushed, and the commit must
+contain an executable root `build.sh`. No Git credentials are created. When
+`kind-registry/internal-registry-client-auth` exists, the test copies it to
+`byob-registry-auth` and attaches it to `byob-build` so Trusted Artifacts can
+push. Set `BYOB_SYSTEM_KEEP=1` to leave the `byob-system` namespace after the run.
+
+`BYOB_CLUSTER=install` does not install anything. It prints the one-time Kind
+setup and exits. From a `konflux-ci` checkout, set `KIND_MEMORY_GB=16` and run:
+
+```sh
+export KIND_EXPERIMENTAL_PROVIDER=podman
+SKIP_SECRETS=true ./scripts/deploy-local.sh
+```
+
+Then rerun `make system-test`.
+
 ## Publish for Pipelines-as-Code
 
 Push the Task bundles and use the digests in

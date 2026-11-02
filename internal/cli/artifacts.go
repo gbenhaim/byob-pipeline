@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 var artifactReference = regexp.MustCompile(`^oci:[^\s=]+@sha256:[a-f0-9]{64}$`)
@@ -31,6 +32,11 @@ func restoreInputs(ctx context.Context, root string, refs []string, required boo
 		return err
 	}
 
+	env, err := commandEnvironment()
+	if err != nil {
+		return err
+	}
+
 	for index, ref := range refs {
 		if !artifactReference.MatchString(ref) {
 			return fmt.Errorf("invalid build artifact reference %q", ref)
@@ -42,7 +48,7 @@ func restoreInputs(ctx context.Context, root string, refs []string, required boo
 		}
 
 		cmd := exec.CommandContext(ctx, "use-archive", ref+"="+destination)
-		cmd.Stdout, cmd.Stderr = stdout, stderr
+		cmd.Stdout, cmd.Stderr, cmd.Env = stdout, stderr, env
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("restore input %d: %w", index, err)
 		}
@@ -84,9 +90,52 @@ func validatePublishOptions(opts publishOptions) error {
 	return nil
 }
 
+// commandEnvironment returns the child process environment. A non-empty
+// CA_FILE bundle is published as SSL_CERT_FILE so ORAS trusts that registry CA.
+func commandEnvironment() ([]string, error) {
+	env := os.Environ()
+	caFile := os.Getenv("CA_FILE")
+	if caFile == "" {
+		return env, nil
+	}
+
+	info, err := os.Stat(caFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return env, nil
+		}
+
+		return nil, err
+	}
+
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return env, nil
+	}
+
+	return setEnv(env, "SSL_CERT_FILE", caFile), nil
+}
+
+// setEnv replaces key in env, or appends it when the key is absent.
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	updated := append([]string{}, env...)
+	for index, item := range updated {
+		if strings.HasPrefix(item, prefix) {
+			updated[index] = prefix + value
+			return updated
+		}
+	}
+
+	return append(updated, prefix+value)
+}
+
 // publishEnvironment configures registry credentials for the ORAS process.
 func publishEnvironment(authDir string) ([]string, string, error) {
-	env := os.Environ()
+	env, err := commandEnvironment()
+	if err != nil {
+		return nil, "", err
+	}
+
 	authfile := filepath.Join(authDir, "config.json")
 	info, err := os.Stat(authfile)
 	if err == nil && info.Mode().IsRegular() {

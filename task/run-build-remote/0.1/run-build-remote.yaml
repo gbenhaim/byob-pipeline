@@ -66,11 +66,33 @@ spec:
                 type: RuntimeDefault
     steps:
         - args:
+            - "1000:0"
+            - /var/source
+          command:
+            - /bin/chown
+          image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+          name: prepare-source
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+                add:
+                    - CHOWN
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+                type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /var/source
+              name: source
+        - args:
             - use
             - $(params.SOURCE_ARTIFACT)=/var/source
           env:
             - name: AUTHFILE
               value: /var/run/byob-registry-auth/config.json
+            - name: CA_FILE
+              value: /etc/pki/tls/certs/ca-custom-bundle.crt
           image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
           name: restore
           volumeMounts:
@@ -79,6 +101,10 @@ spec:
             - mountPath: /var/run/byob-registry-auth
               name: registry-auth
               readOnly: true
+            - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+              name: trusted-ca
+              readOnly: true
+              subPath: ca-bundle.crt
         - args:
             - prepare
             - --inputs=/var/workdir/inputs
@@ -91,6 +117,8 @@ spec:
           env:
             - name: AUTHFILE
               value: /var/run/byob-registry-auth/config.json
+            - name: CA_FILE
+              value: /etc/pki/tls/certs/ca-custom-bundle.crt
           image: localhost/byob-cli:devel
           name: prepare
           volumeMounts:
@@ -101,6 +129,10 @@ spec:
             - mountPath: /var/run/byob-registry-auth
               name: registry-auth
               readOnly: true
+            - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+              name: trusted-ca
+              readOnly: true
+              subPath: ca-bundle.crt
         - args:
             - check-command
             - --command-file=/var/workdir/control/build-cmd
@@ -227,6 +259,8 @@ spec:
           env:
             - name: AUTHFILE
               value: /var/run/byob-registry-auth/config.json
+            - name: CA_FILE
+              value: /etc/pki/tls/certs/ca-custom-bundle.crt
             - name: IMAGE_EXPIRES_AFTER
               value: $(params.ociArtifactExpiresAfter)
           image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
@@ -241,6 +275,10 @@ spec:
             - mountPath: /var/run/byob-registry-auth
               name: registry-auth
               readOnly: true
+            - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+              name: trusted-ca
+              readOnly: true
+              subPath: ca-bundle.crt
     volumes:
         - emptyDir: {}
           name: source
@@ -255,6 +293,13 @@ spec:
                   path: config.json
             optional: true
             secretName: byob-registry-auth
+        - configMap:
+            items:
+                - key: ca-bundle.crt
+                  path: ca-bundle.crt
+            name: trusted-ca
+            optional: true
+          name: trusted-ca
         - name: ssh
           secret:
             secretName: multi-platform-ssh-$(context.taskRun.name)

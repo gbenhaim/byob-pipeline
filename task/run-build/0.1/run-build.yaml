@@ -66,7 +66,36 @@ spec:
       items:
       - key: .dockerconfigjson
         path: config.json
+  - name: trusted-ca
+    configMap:
+      name: trusted-ca
+      optional: true
+      items:
+      - key: ca-bundle.crt
+        path: ca-bundle.crt
   steps:
+  # The emptyDir mount is owned by root. use-archive preserves directory
+  # metadata, so uid 1000 must own the mount before restore.
+  - name: prepare-source
+    image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+    command:
+    - /bin/chown
+    args:
+    - 1000:0
+    - /var/source
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+      runAsNonRoot: false
+      allowPrivilegeEscalation: false
+      capabilities:
+        add:
+        - CHOWN
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - name: source
+      mountPath: /var/source
   - name: restore
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
     args:
@@ -78,9 +107,15 @@ spec:
     - name: registry-auth
       mountPath: /var/run/byob-registry-auth
       readOnly: true
+    - name: trusted-ca
+      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+      subPath: ca-bundle.crt
+      readOnly: true
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
+    - name: CA_FILE
+      value: /etc/pki/tls/certs/ca-custom-bundle.crt
   - name: prepare
     image: localhost/byob-cli:devel
     args:
@@ -93,6 +128,8 @@ spec:
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
+    - name: CA_FILE
+      value: /etc/pki/tls/certs/ca-custom-bundle.crt
     volumeMounts:
     - name: source
       mountPath: /var/source
@@ -100,6 +137,10 @@ spec:
       mountPath: /var/workdir
     - name: registry-auth
       mountPath: /var/run/byob-registry-auth
+      readOnly: true
+    - name: trusted-ca
+      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+      subPath: ca-bundle.crt
       readOnly: true
     command:
     - /usr/local/bin/byob
@@ -165,6 +206,8 @@ spec:
     env:
     - name: AUTHFILE
       value: /var/run/byob-registry-auth/config.json
+    - name: CA_FILE
+      value: /etc/pki/tls/certs/ca-custom-bundle.crt
     - name: IMAGE_EXPIRES_AFTER
       value: $(params.ociArtifactExpiresAfter)
     volumeMounts:
@@ -173,4 +216,8 @@ spec:
       readOnly: true
     - name: registry-auth
       mountPath: /var/run/byob-registry-auth
+      readOnly: true
+    - name: trusted-ca
+      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+      subPath: ca-bundle.crt
       readOnly: true

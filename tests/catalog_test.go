@@ -97,8 +97,14 @@ type result struct {
 }
 
 type volume struct {
-	Name   string         `yaml:"name"`
-	Secret map[string]any `yaml:"secret"`
+	Name      string         `yaml:"name"`
+	Secret    map[string]any `yaml:"secret"`
+	ConfigMap map[string]any `yaml:"configMap"`
+}
+
+type envVar struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
 }
 
 type mount struct {
@@ -116,6 +122,7 @@ type step struct {
 	Args         []string `yaml:"args"`
 	WorkingDir   string   `yaml:"workingDir"`
 	VolumeMounts []mount  `yaml:"volumeMounts"`
+	Env          []envVar `yaml:"env"`
 	When         []struct {
 		Input    string   `yaml:"input"`
 		Operator string   `yaml:"operator"`
@@ -218,6 +225,17 @@ func findParam(params []param, name string) param {
 func assertEqual(got, want any) {
 	GinkgoHelper()
 	Expect(got).To(Equal(want))
+}
+
+// envValue returns a step environment value, or an empty string when absent.
+func envValue(taskStep step, name string) string {
+	for _, item := range taskStep.Env {
+		if item.Name == name {
+			return item.Value
+		}
+	}
+
+	return ""
 }
 
 // hasMount reports whether a step mounts the named volume.
@@ -396,6 +414,52 @@ var _ = Describe("BYOB catalog", func() {
 			Expect(slices.ContainsFunc(taskSpec("pack").Results, func(taskResult result) bool {
 				return taskResult.Name == name && taskResult.Value == "$(steps.publish.results."+name+")"
 			})).To(BeTrue(), "pack must expose publish's %s result", name)
+		}
+	})
+
+	It("mounts the optional registry CA on registry steps", func() {
+		const caPath = "/etc/pki/tls/certs/ca-custom-bundle.crt"
+		registrySteps := map[string][]string{
+			"run-build":        {"restore", "prepare", "export"},
+			"run-build-remote": {"restore", "prepare", "export"},
+			"pack":             {"restore", "publish"},
+		}
+		for taskName, stepNames := range registrySteps {
+			By("checking " + taskName)
+			task := taskSpec(taskName)
+			var trustedCA volume
+			found := false
+			for _, taskVolume := range task.Volumes {
+				if taskVolume.Name == "trusted-ca" {
+					trustedCA = taskVolume
+					found = true
+				}
+			}
+
+			Expect(found).To(BeTrue(), "%s has no trusted-ca volume", taskName)
+			Expect(trustedCA.ConfigMap).To(HaveKeyWithValue("name", "trusted-ca"))
+			Expect(trustedCA.ConfigMap).To(HaveKeyWithValue("optional", true))
+			Expect(trustedCA.ConfigMap["items"]).To(ConsistOf(And(
+				HaveKeyWithValue("key", "ca-bundle.crt"),
+				HaveKeyWithValue("path", "ca-bundle.crt"),
+			)))
+
+			for _, stepName := range stepNames {
+				taskStep := findStep(task, stepName)
+				Expect(slices.ContainsFunc(taskStep.VolumeMounts, func(mounted mount) bool {
+					return mounted.Name == "trusted-ca" &&
+						mounted.MountPath == caPath &&
+						mounted.SubPath == "ca-bundle.crt" &&
+						mounted.ReadOnly
+				})).To(BeTrue(), "%s %s must mount the registry CA", taskName, stepName)
+				Expect(envValue(taskStep, "CA_FILE")).To(Equal(caPath))
+			}
+		}
+
+		for taskName, stepName := range map[string]string{"run-build": "build", "run-build-remote": "build-local"} {
+			developerStep := findStep(taskSpec(taskName), stepName)
+			Expect(hasMount(developerStep.VolumeMounts, "trusted-ca")).To(BeFalse(), "%s developer step mounts the registry CA", taskName)
+			Expect(envValue(developerStep, "CA_FILE")).To(BeEmpty())
 		}
 	})
 
