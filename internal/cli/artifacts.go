@@ -66,18 +66,61 @@ func restoreInputs(ctx context.Context, root string, refs []string, required boo
 	return nil
 }
 
+// restoreSource extracts one checkout artifact directly into the source directory.
+func restoreSource(ctx context.Context, ref, destination string, stdout, stderr io.Writer) error {
+	if !artifactReference.MatchString(ref) {
+		return fmt.Errorf("invalid source artifact reference %q", ref)
+	}
+
+	info, err := os.Stat(destination)
+	if err != nil {
+		return fmt.Errorf("source directory: %w", err)
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("source is not a directory: %s", destination)
+	}
+
+	env, err := commandEnvironment()
+	if err != nil {
+		return err
+	}
+
+	report(stderr, "Restoring source artifact %s into %s", ref, destination)
+	cmd := exec.CommandContext(ctx, "use-archive", ref+"="+destination)
+	cmd.Stdout, cmd.Stderr, cmd.Env = stdout, stderr, env
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("restore source: %w", err)
+	}
+
+	report(stderr, "Restored source artifact into %s", destination)
+	return nil
+}
+
 type publishOptions struct {
 	Image, ArtifactType, Workdir, AuthDir, URLResult, DigestResult string
+	Inputs, Package, Archive, Layout                               string
+	Artifacts                                                      []string
 	PlainHTTP                                                      bool
 }
 
-// publish pushes the payload, then writes result files after publication succeeds.
-func publish(ctx context.Context, opts publishOptions, stderr io.Writer) error {
+// publish packs restored inputs when requested, pushes the payload, and writes
+// result files only after publication succeeds.
+func publish(ctx context.Context, opts publishOptions, stdout, stderr io.Writer) error {
 	if err := validatePublishOptions(opts); err != nil {
 		return err
 	}
 
-	report(stderr, "Publishing %s to %s as %s", filepath.Join(opts.Workdir, "payload.tar.gz"), opts.Image, opts.ArtifactType)
+	if err := stagePublication(ctx, &opts, stdout, stderr); err != nil {
+		return err
+	}
+
+	payload := filepath.Join(opts.Workdir, "payload.tar.gz")
+	if opts.Archive != "" {
+		payload = opts.Archive
+	}
+
+	report(stderr, "Publishing %s to %s as %s", payload, opts.Image, opts.ArtifactType)
 	env, authfile, err := publishEnvironment(opts.AuthDir)
 	if err != nil {
 		return err
@@ -94,6 +137,39 @@ func publish(ctx context.Context, opts publishOptions, stderr io.Writer) error {
 
 	report(stderr, "Published %s with digest %s", opts.Image, digest)
 	return nil
+}
+
+// stagePublication restores required build artifacts and packs the delivery archive.
+func stagePublication(ctx context.Context, opts *publishOptions, stdout, stderr io.Writer) error {
+	if opts.Inputs == "" {
+		if len(opts.Artifacts) > 0 {
+			return fmt.Errorf("--inputs is required when artifact references are supplied")
+		}
+
+		return nil
+	}
+
+	if err := restoreInputs(ctx, opts.Inputs, opts.Artifacts, true, stdout, stderr); err != nil {
+		return err
+	}
+
+	archive := opts.Archive
+	if archive == "" {
+		archive = filepath.Join(opts.Workdir, "payload.tar.gz")
+	}
+
+	layout := opts.Layout
+	if layout == "" {
+		layout = "flat"
+	}
+
+	packageRoot := opts.Package
+	if packageRoot == "" {
+		packageRoot = filepath.Join(opts.Workdir, "package")
+	}
+
+	opts.Archive = archive
+	return packArchive(opts.Inputs, packageRoot, archive, layout, stderr)
 }
 
 // validatePublishOptions requires the subject metadata and all result destinations.
@@ -181,9 +257,16 @@ func publishPayload(
 		args = append(args, "--plain-http")
 	}
 
-	args = append(args, opts.Image, "payload.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip")
+	payloadName := "payload.tar.gz"
+	payloadDir := opts.Workdir
+	if opts.Archive != "" {
+		payloadName = filepath.Base(opts.Archive)
+		payloadDir = filepath.Dir(opts.Archive)
+	}
+
+	args = append(args, opts.Image, payloadName+":application/vnd.oci.image.layer.v1.tar+gzip")
 	cmd := exec.CommandContext(ctx, "oras", args...)
-	cmd.Dir, cmd.Env, cmd.Stderr = opts.Workdir, env, stderr
+	cmd.Dir, cmd.Env, cmd.Stderr = payloadDir, env, stderr
 	var manifest bytes.Buffer
 	cmd.Stdout = &manifest
 	if err := cmd.Run(); err != nil {

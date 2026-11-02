@@ -89,43 +89,15 @@ spec:
             - mountPath: /var/source
               name: source
         - args:
-            - -c
-            - |
-              printf 'Restoring source artifact %s\n' "$2" >&2
-              /usr/local/bin/entrypoint "$@"
-              status=$?
-              if [ "$status" -eq 0 ]; then
-                printf 'Restored source artifact into /var/source\n' >&2
-              fi
-              exit "$status"
-            - restore
-            - use
-            - $(params.SOURCE_ARTIFACT)=/var/source
-          command:
-            - /bin/sh
-          env:
-            - name: AUTHFILE
-              value: /var/run/byob-registry-auth/config.json
-            - name: CA_FILE
-              value: /etc/pki/tls/certs/ca-custom-bundle.crt
-          image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
-          name: restore
-          volumeMounts:
-            - mountPath: /var/source
-              name: source
-            - mountPath: /var/run/byob-registry-auth
-              name: registry-auth
-              readOnly: true
-            - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
-              name: trusted-ca
-              readOnly: true
-              subPath: ca-bundle.crt
-        - args:
             - prepare
+            - --source-artifact=$(params.SOURCE_ARTIFACT)
             - --inputs=/var/workdir/inputs
             - --source=/var/source
             - --home=/var/workdir/home
+            - --command-file=/var/workdir/control/build-cmd
             - --
+            - $(params.build-cmd[*])
+            - --artifacts
             - $(params.BUILD_ARTIFACTS[*])
           command:
             - /usr/local/bin/byob
@@ -148,18 +120,6 @@ spec:
               name: trusted-ca
               readOnly: true
               subPath: ca-bundle.crt
-        - args:
-            - check-command
-            - --command-file=/var/workdir/control/build-cmd
-            - --
-            - $(params.build-cmd[*])
-          command:
-            - /usr/local/bin/byob
-          image: localhost/byob-cli:devel
-          name: check-command
-          volumeMounts:
-            - mountPath: /var/workdir
-              name: workdir
         - args:
             - select-platform
             - --ssh-dir=/ssh

@@ -223,6 +223,65 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 			})
 		}
 
+		It("restores and packs inputs before publishing", func() {
+			root := GinkgoT().TempDir()
+			ref := "oci:registry.example/build@sha256:" + strings.Repeat("b", 64)
+			fixtureCommand("use-archive", `destination=${1#*=}
+mkdir -p "$destination/out"
+printf hello > "$destination/out/hello.txt"
+`)
+			fixtureCommand("oras", "printf '%s' '{\"digest\":\""+digest+"\"}'\n")
+			archive := filepath.Join(root, "payload.tar.gz")
+
+			stdout, stderr, err := runCLIStreams(
+				"publish",
+				"--inputs="+filepath.Join(root, "inputs"),
+				"--package="+filepath.Join(root, "package"),
+				"--archive="+archive,
+				"--layout=flat",
+				"--workdir="+root,
+				"--image=localhost:5000/team/output:test",
+				"--url-result="+filepath.Join(root, "url"),
+				"--digest-result="+filepath.Join(root, "digest"),
+				"--auth-dir="+filepath.Join(root, "no-auth"),
+				"--",
+				ref,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stdout).To(BeEmpty())
+			Expect(stderr).To(ContainSubstring("Restored build artifact 0 into " + filepath.Join(root, "inputs", "0")))
+			Expect(stderr).To(ContainSubstring("Packed " + archive))
+			Expect(stderr).To(ContainSubstring("Published localhost:5000/team/output:test with digest " + digest))
+			Expect(string(mustReadFile(filepath.Join(root, "digest")))).To(Equal(digest))
+		})
+
+		It("does not publish when input restoration fails", func() {
+			root := GinkgoT().TempDir()
+			ref := "oci:registry.example/build@sha256:" + strings.Repeat("c", 64)
+			called := filepath.Join(root, "oras-called")
+			fixtureCommand("use-archive", "exit 1\n")
+			fixtureCommand("oras", fmt.Sprintf("touch %q\nprintf '%%s' '{\"digest\":\"%s\"}'\n", called, digest))
+
+			_, stderr, err := runCLIStreams(
+				"publish",
+				"--inputs="+filepath.Join(root, "inputs"),
+				"--archive="+filepath.Join(root, "payload.tar.gz"),
+				"--workdir="+root,
+				"--image=localhost:5000/team/output:test",
+				"--url-result="+filepath.Join(root, "url"),
+				"--digest-result="+filepath.Join(root, "digest"),
+				"--auth-dir="+filepath.Join(root, "no-auth"),
+				"--",
+				ref,
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(stderr).NotTo(ContainSubstring("Published "))
+			_, statErr := os.Stat(called)
+			Expect(os.IsNotExist(statErr)).To(BeTrue(), "oras ran before restoration succeeded")
+			_, statErr = os.Stat(filepath.Join(root, "digest"))
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+
 		It("gives oras a non-empty registry CA bundle", func() {
 			ca := filepath.Join(GinkgoT().TempDir(), "ca.crt")
 			Expect(os.WriteFile(ca, []byte("custom-ca"), 0644)).To(Succeed())

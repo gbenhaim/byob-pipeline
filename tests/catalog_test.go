@@ -246,9 +246,9 @@ func hasMount(mounts []mount, name string) bool {
 var _ = Describe("BYOB catalog", func() {
 	It("routes trusted Task operations through the CLI", func() {
 		operations := map[string]map[string]string{
-			"run-build":        {"prepare": "prepare", "check-command": "check-command", "validate-output": "stage-output"},
-			"run-build-remote": {"prepare": "prepare", "check-command": "check-command", "select-platform": "select-platform", "build-remote": "build-remote", "record-image": "record-image", "validate-output": "stage-output"},
-			"pack":             {"restore": "restore-inputs", "prepare": "pack", "publish": "publish"},
+			"run-build":        {"prepare": "prepare", "validate-output": "stage-output"},
+			"run-build-remote": {"prepare": "prepare", "select-platform": "select-platform", "build-remote": "build-remote", "record-image": "record-image", "validate-output": "stage-output"},
+			"pack":             {"publish": "publish"},
 		}
 
 		for taskName, commands := range operations {
@@ -285,30 +285,38 @@ var _ = Describe("BYOB catalog", func() {
 		}
 	})
 
-	It("checks the build command before either developer path", func() {
+	It("records the build command in prepare before either developer path", func() {
+		prepareArgs := []string{
+			"prepare",
+			"--source-artifact=$(params.SOURCE_ARTIFACT)",
+			"--inputs=/var/workdir/inputs",
+			"--source=/var/source",
+			"--home=/var/workdir/home",
+			"--command-file=/var/workdir/control/build-cmd",
+			"--",
+			"$(params.build-cmd[*])",
+			"--artifacts",
+			"$(params.BUILD_ARTIFACTS[*])",
+		}
 		for _, taskName := range []string{"run-build", "run-build-remote"} {
 			By("checking " + taskName)
 			task := taskSpec(taskName)
 			names := make([]string, 0, len(task.Steps))
 			for _, taskStep := range task.Steps {
 				names = append(names, taskStep.Name)
+				Expect(taskStep.Name).NotTo(Equal("check-command"), "%s still starts a command-recording container", taskName)
+				Expect(taskStep.Name).NotTo(Equal("restore"), "%s still starts a source-restore container", taskName)
 			}
 
-			checkAt := slices.Index(names, "check-command")
-			Expect(checkAt).To(BeNumerically(">", slices.Index(names, "prepare")))
+			prepareAt := slices.Index(names, "prepare")
 			developer := "build"
 			if taskName == "run-build-remote" {
 				developer = "build-local"
-				Expect(checkAt).To(BeNumerically("<", slices.Index(names, "build-remote")))
+				Expect(prepareAt).To(BeNumerically("<", slices.Index(names, "build-remote")))
 			}
 
-			Expect(checkAt).To(BeNumerically("<", slices.Index(names, developer)))
-			Expect(findStep(task, "check-command").Args).To(Equal([]string{
-				"check-command",
-				"--command-file=/var/workdir/control/build-cmd",
-				"--",
-				"$(params.build-cmd[*])",
-			}))
+			Expect(prepareAt).To(BeNumerically("<", slices.Index(names, developer)))
+			Expect(findStep(task, "prepare").Args).To(Equal(prepareArgs))
 		}
 
 		remoteBuild := findStep(taskSpec("run-build-remote"), "build-remote")
@@ -420,9 +428,9 @@ var _ = Describe("BYOB catalog", func() {
 	It("mounts the optional registry CA on registry steps", func() {
 		const caPath = "/etc/pki/tls/certs/ca-custom-bundle.crt"
 		registrySteps := map[string][]string{
-			"run-build":        {"restore", "prepare", "export"},
-			"run-build-remote": {"restore", "prepare", "export"},
-			"pack":             {"restore", "publish"},
+			"run-build":        {"prepare", "export"},
+			"run-build-remote": {"prepare", "export"},
+			"pack":             {"publish"},
 		}
 		for taskName, stepNames := range registrySteps {
 			By("checking " + taskName)
@@ -488,10 +496,35 @@ var _ = Describe("BYOB catalog", func() {
 			}
 
 			stepName := "prepare"
-			wantArgs := []string{"prepare", "--inputs=/var/workdir/inputs", "--source=/var/source", "--home=/var/workdir/home", "--", "$(params.BUILD_ARTIFACTS[*])"}
+			wantArgs := []string{
+				"prepare",
+				"--source-artifact=$(params.SOURCE_ARTIFACT)",
+				"--inputs=/var/workdir/inputs",
+				"--source=/var/source",
+				"--home=/var/workdir/home",
+				"--command-file=/var/workdir/control/build-cmd",
+				"--",
+				"$(params.build-cmd[*])",
+				"--artifacts",
+				"$(params.BUILD_ARTIFACTS[*])",
+			}
 			if name == "pack" {
-				stepName = "restore"
-				wantArgs = []string{"restore-inputs", "--root=/var/workdir/inputs", "--require", "--", "$(params.BUILD_ARTIFACTS[*])"}
+				stepName = "publish"
+				wantArgs = []string{
+					"publish",
+					"--inputs=/var/workdir/inputs",
+					"--package=/var/workdir/package",
+					"--archive=/var/workdir/payload.tar.gz",
+					"--layout=$(params.layout)",
+					"--workdir=/var/workdir",
+					"--image=$(params.IMAGE)",
+					"--artifact-type=$(params.artifactType)",
+					"--auth-dir=/var/run/byob-registry-auth",
+					"--url-result=$(step.results.IMAGE_URL.path)",
+					"--digest-result=$(step.results.IMAGE_DIGEST.path)",
+					"--",
+					"$(params.BUILD_ARTIFACTS[*])",
+				}
 			} else {
 				Expect(inputs.Default).To(Equal([]any{}))
 			}

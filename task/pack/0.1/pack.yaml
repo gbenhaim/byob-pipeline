@@ -59,12 +59,23 @@ spec:
       - key: ca-bundle.crt
         path: ca-bundle.crt
   steps:
-  - name: restore
+  - name: publish
     image: localhost/byob-cli:devel
+    workingDir: /var/workdir
+    command:
+    - /usr/local/bin/byob
     args:
-    - restore-inputs
-    - --root=/var/workdir/inputs
-    - --require
+    - publish
+    - --inputs=/var/workdir/inputs
+    - --package=/var/workdir/package
+    - --archive=/var/workdir/payload.tar.gz
+    - --layout=$(params.layout)
+    - --workdir=/var/workdir
+    - --image=$(params.IMAGE)
+    - --artifact-type=$(params.artifactType)
+    - --auth-dir=/var/run/byob-registry-auth
+    - --url-result=$(step.results.IMAGE_URL.path)
+    - --digest-result=$(step.results.IMAGE_DIGEST.path)
     - --
     - $(params.BUILD_ARTIFACTS[*])
     env:
@@ -72,59 +83,18 @@ spec:
       value: /var/run/byob-registry-auth/config.json
     - name: CA_FILE
       value: /etc/pki/tls/certs/ca-custom-bundle.crt
-    volumeMounts:
-    - name: workdir
-      mountPath: /var/workdir
-    - name: registry-auth
-      mountPath: /var/run/byob-registry-auth
-      readOnly: true
-    - name: trusted-ca
-      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
-      subPath: ca-bundle.crt
-      readOnly: true
-    command:
-    - /usr/local/bin/byob
-  - name: prepare
-    image: localhost/byob-cli:devel
-    volumeMounts:
-    - name: workdir
-      mountPath: /var/workdir
-    command:
-    - /usr/local/bin/byob
-    args:
-    - pack
-    - --inputs=/var/workdir/inputs
-    - --package=/var/workdir/package
-    - --archive=/var/workdir/payload.tar.gz
-    - --layout=$(params.layout)
-  - name: publish
-    image: localhost/byob-cli:devel
-    workingDir: /var/workdir
-    volumeMounts:
-    - name: workdir
-      mountPath: /var/workdir
-    - name: registry-auth
-      mountPath: /var/run/byob-registry-auth
-      readOnly: true
-    - name: trusted-ca
-      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
-      subPath: ca-bundle.crt
-      readOnly: true
-    env:
-    - name: CA_FILE
-      value: /etc/pki/tls/certs/ca-custom-bundle.crt
     results:
     - name: IMAGE_URL
       type: string
     - name: IMAGE_DIGEST
       type: string
-    command:
-    - /usr/local/bin/byob
-    args:
-    - publish
-    - --workdir=/var/workdir
-    - --image=$(params.IMAGE)
-    - --artifact-type=$(params.artifactType)
-    - --auth-dir=/var/run/byob-registry-auth
-    - --url-result=$(step.results.IMAGE_URL.path)
-    - --digest-result=$(step.results.IMAGE_DIGEST.path)
+    volumeMounts:
+    - name: workdir
+      mountPath: /var/workdir
+    - name: registry-auth
+      mountPath: /var/run/byob-registry-auth
+      readOnly: true
+    - name: trusted-ca
+      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+      subPath: ca-bundle.crt
+      readOnly: true

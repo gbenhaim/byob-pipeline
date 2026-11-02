@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,91 @@ printf restored > "$destination/out/input.txt"
 
 			_, err = os.Stat(home)
 			Expect(os.IsNotExist(err)).To(BeTrue(), "build home should not exist: %v", err)
+		})
+
+		It("restores the source artifact before preparing the checkout", func() {
+			fixtureCommand("use-archive", `destination=${1#*=}
+printf restored > "$destination/README"
+`)
+			source := GinkgoT().TempDir()
+			home := filepath.Join(GinkgoT().TempDir(), "home")
+			ref := "oci:registry.example/source@sha256:" + strings.Repeat("a", 64)
+
+			stdout, stderr, err := runCLIStreams(
+				"prepare",
+				"--source-artifact="+ref,
+				"--source="+source,
+				"--home="+home,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stdout).To(BeEmpty())
+			Expect(stderr).To(ContainSubstring("Restoring source artifact " + ref + " into " + source))
+			Expect(stderr).To(ContainSubstring("Restored source artifact into " + source))
+
+			data, err := os.ReadFile(filepath.Join(source, "README"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(Equal("restored"))
+		})
+
+		It("records the build command and restores artifacts in one invocation", func() {
+			fixtureCommand("use-archive", `destination=${1#*=}
+mkdir -p "$destination/out"
+printf restored > "$destination/out/input.txt"
+`)
+			source := GinkgoT().TempDir()
+			inputs := filepath.Join(GinkgoT().TempDir(), "inputs")
+			home := filepath.Join(GinkgoT().TempDir(), "home")
+			file := filepath.Join(GinkgoT().TempDir(), "build-cmd")
+			ref := "oci:registry.example/build@sha256:" + strings.Repeat("b", 64)
+
+			_, stderr, err := runCLIStreams(
+				"prepare",
+				"--source="+source,
+				"--inputs="+inputs,
+				"--home="+home,
+				"--command-file="+file,
+				"--",
+				"./build.sh", "--flag", "two words",
+				"--artifacts",
+				ref,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stderr).To(ContainSubstring(`Recording build command "./build.sh" "--flag" "two words"`))
+			Expect(stderr).To(ContainSubstring("Recorded build command in " + file))
+
+			var got []string
+			Expect(json.Unmarshal(mustReadFile(file), &got)).To(Succeed())
+			Expect(got).To(Equal([]string{"./build.sh", "--flag", "two words"}))
+
+			data, err := os.ReadFile(filepath.Join(inputs, "0", "out", "input.txt"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(Equal("restored"))
+		})
+
+		It("rejects an empty build command before restoring source", func() {
+			called := filepath.Join(GinkgoT().TempDir(), "called")
+			fixtureCommand("use-archive", fmt.Sprintf("touch %q\n", called))
+			source := GinkgoT().TempDir()
+			home := filepath.Join(GinkgoT().TempDir(), "home")
+			file := filepath.Join(GinkgoT().TempDir(), "build-cmd")
+			ref := "oci:registry.example/source@sha256:" + strings.Repeat("c", 64)
+
+			err := runCLI(
+				"prepare",
+				"--source-artifact="+ref,
+				"--source="+source,
+				"--home="+home,
+				"--command-file="+file,
+				"--",
+				"--artifacts",
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("build command"))
+
+			for _, path := range []string{called, home, file} {
+				_, statErr := os.Stat(path)
+				Expect(os.IsNotExist(statErr)).To(BeTrue(), "%s should not exist", path)
+			}
 		})
 
 		It("logs the source it prepares and the home it creates", func() {
