@@ -23,6 +23,7 @@ lint:
 	shellcheck internal/remote/*.sh examples/component/*.sh examples/component/scripts/*.sh build.sh
 	test -z "$$(gofmt -l cmd internal task-generator tests)"
 	go vet ./...
+	go -C tests/system vet ./...
 
 validate:
 	cd tests/tekton && go run . ../../task/*/0.1/*.yaml ../../pipelines/*.yaml ../../examples/pipelineruns/*.yaml ../../examples/pac/*.yaml
@@ -62,4 +63,4 @@ system-test:
 		kind load image-archive "$$archive" --name "$$cluster"; \
 		kind get kubeconfig --name "$$cluster" > "$$kubeconfig"; \
 		KUBECONFIG="$$kubeconfig" BYOB_KIND_CLUSTER="$$cluster" \
-			go test -tags=system -count=1 -timeout 25m ./tests/system'
+			go -C tests/system test -count=1 -timeout 25m .'

@@ -71,13 +71,19 @@ func publishedSSLCertFile(caFile, previous, digest string) string {
 
 // runCLI invokes the public CLI and writes captured output when it fails.
 func runCLI(args ...string) error {
-	var output bytes.Buffer
-	err := Run(context.Background(), args, &output, &output)
+	_, _, err := runCLIStreams(args...)
+	return err
+}
+
+// runCLIStreams invokes the public CLI and returns its stdout and stderr.
+func runCLIStreams(args ...string) (string, string, error) {
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), args, &stdout, &stderr)
 	if err != nil {
-		GinkgoWriter.Printf("CLI output:\n%s", output.String())
+		GinkgoWriter.Printf("CLI output:\n%s%s", stdout.String(), stderr.String())
 	}
 
-	return err
+	return stdout.String(), stderr.String(), err
 }
 
 var _ = Describe("CLI", func() {
@@ -86,7 +92,10 @@ var _ = Describe("CLI", func() {
 
 		It("accepts empty optional inputs and rejects them when required", func() {
 			root := filepath.Join(GinkgoT().TempDir(), "inputs")
-			Expect(runCLI("restore-inputs", "--root="+root, "--")).To(Succeed())
+			stdout, stderr, err := runCLIStreams("restore-inputs", "--root="+root, "--")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stdout).To(BeEmpty())
+			Expect(stderr).To(ContainSubstring("No build artifacts to restore into " + root))
 
 			entries, err := os.ReadDir(root)
 			Expect(err).NotTo(HaveOccurred())
@@ -103,7 +112,11 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 			root := filepath.Join(GinkgoT().TempDir(), "inputs")
 			second := "oci:registry.example/other@sha256:" + strings.Repeat("b", 64)
 
-			Expect(runCLI("restore-inputs", "--root="+root, "--", ref, second)).To(Succeed())
+			_, stderr, err := runCLIStreams("restore-inputs", "--root="+root, "--", ref, second)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stderr).To(ContainSubstring("Restoring 2 build artifact(s) into " + root))
+			Expect(stderr).To(ContainSubstring("Restored build artifact 0 into " + filepath.Join(root, "0")))
+			Expect(stderr).To(ContainSubstring("Restored build artifact 1 into " + filepath.Join(root, "1")))
 
 			for index, want := range map[string]string{"0": ref, "1": second} {
 				data, err := os.ReadFile(filepath.Join(root, index, "out/shared.txt"))
@@ -183,9 +196,11 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 				fixtureCommand("oras", scenario.script)
 				Expect(os.WriteFile(filepath.Join(root, "payload.tar.gz"), []byte("payload"), 0644)).To(Succeed())
 
-				err := runCLI("publish", "--workdir="+root, "--image=localhost:5000/team/output:test", "--url-result="+root+"/url", "--digest-result="+root+"/digest", "--auth-dir="+root+"/no-auth")
+				stdout, stderr, err := runCLIStreams("publish", "--workdir="+root, "--image=localhost:5000/team/output:test", "--url-result="+root+"/url", "--digest-result="+root+"/digest", "--auth-dir="+root+"/no-auth")
 				if !scenario.shouldPass {
 					Expect(err).To(HaveOccurred())
+					Expect(stderr).To(ContainSubstring("Publishing " + filepath.Join(root, "payload.tar.gz")))
+					Expect(stderr).NotTo(ContainSubstring("Published "))
 					for _, name := range []string{"url", "digest"} {
 						_, statErr := os.Stat(filepath.Join(root, name))
 						Expect(os.IsNotExist(statErr)).To(BeTrue(), "result %s was written before publication succeeded: %v", name, statErr)
@@ -194,6 +209,9 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 				}
 
 				Expect(err).NotTo(HaveOccurred())
+				Expect(stdout).To(BeEmpty())
+				Expect(stderr).To(ContainSubstring("Publishing " + filepath.Join(root, "payload.tar.gz") + " to localhost:5000/team/output:test as application/vnd.konflux.build-output.v1"))
+				Expect(stderr).To(ContainSubstring("Published localhost:5000/team/output:test with digest " + digest))
 				for name, want := range map[string]string{
 					"url":    "localhost:5000/team/output:test",
 					"digest": digest,

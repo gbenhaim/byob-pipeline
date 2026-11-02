@@ -1,5 +1,3 @@
-//go:build system
-
 package system
 
 import (
@@ -34,6 +32,9 @@ kind: PipelineRun
 metadata:
   name: %s
   namespace: %s
+  labels:
+    appstudio.openshift.io/application: %s
+    appstudio.openshift.io/component: %s
 spec:
   taskRunTemplate:
     serviceAccountName: byob-build
@@ -48,7 +49,7 @@ spec:
     value: %q
   - name: oci-storage
     value: %q
-`, name, namespace, gitURL, revision, image, storage)
+`, name, namespace, applicationName(), applicationName(), gitURL, revision, image, storage)
 	mustKubectlStdin(manifest, "create", "-f", "-")
 	return name, image
 }
@@ -209,6 +210,7 @@ spec:
       - key: ca-bundle.crt
         path: ca-bundle.crt
 `, namespace, `if [ -s /var/run/byob-registry-auth/config.json ]; then export DOCKER_CONFIG=/var/run/byob-registry-auth; fi; oras pull "$REF" >/tmp/oras.log 2>&1 || { cat /tmp/oras.log >&2; exit 1; }; tar -xOf payload.tar.gz hello.txt`, reference, caPath, caPath)
+	_, _, _ = kubectl("delete", "pod", "-n", namespace, "byob-pull", "--ignore-not-found=true", "--wait=true")
 	mustKubectlStdin(manifest, "apply", "-f", "-")
 
 	Eventually(func() error {

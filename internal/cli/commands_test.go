@@ -101,10 +101,24 @@ printf restored > "$destination/out/input.txt"
 			home := filepath.Join(GinkgoT().TempDir(), "home")
 			missingSource := filepath.Join(GinkgoT().TempDir(), "missing")
 
-			Expect(runCLI("prepare", "--source="+missingSource, "--home="+home)).To(HaveOccurred())
+			_, stderr, err := runCLIStreams("prepare", "--source="+missingSource, "--home="+home)
+			Expect(err).To(HaveOccurred())
+			Expect(stderr).To(ContainSubstring("Preparing source " + missingSource))
+			Expect(stderr).NotTo(ContainSubstring("Prepared source"))
 
-			_, err := os.Stat(home)
+			_, err = os.Stat(home)
 			Expect(os.IsNotExist(err)).To(BeTrue(), "build home should not exist: %v", err)
+		})
+
+		It("logs the source it prepares and the home it creates", func() {
+			source := GinkgoT().TempDir()
+			home := filepath.Join(GinkgoT().TempDir(), "home")
+
+			stdout, stderr, err := runCLIStreams("prepare", "--source="+source, "--home="+home)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stdout).To(BeEmpty())
+			Expect(stderr).To(ContainSubstring("Preparing source " + source))
+			Expect(stderr).To(ContainSubstring("Prepared source " + source + " and created build home " + home))
 		})
 	})
 
@@ -146,11 +160,53 @@ printf restored > "$destination/out/input.txt"
 
 		It("records the build argv", func() {
 			file := filepath.Join(GinkgoT().TempDir(), "control", "build-cmd")
-			Expect(runCLI("check-command", "--command-file="+file, "--", "./build.sh", "--flag", "two words")).To(Succeed())
+			stdout, stderr, err := runCLIStreams("check-command", "--command-file="+file, "--", "./build.sh", "--flag", "two words")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stdout).To(BeEmpty())
+			Expect(stderr).To(ContainSubstring(`Recording build command "./build.sh" "--flag" "two words"`))
+			Expect(stderr).To(ContainSubstring("Recorded build command in " + file))
 
 			var got []string
 			Expect(json.Unmarshal(mustReadFile(file), &got)).To(Succeed())
 			Expect(got).To(Equal([]string{"./build.sh", "--flag", "two words"}))
+		})
+	})
+
+	Describe("stage-output", func() {
+		It("logs the output directory it stages", func() {
+			source := GinkgoT().TempDir()
+			Expect(os.MkdirAll(filepath.Join(source, "out"), 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(source, "out", "hello.txt"), []byte("hello\n"), 0o644)).To(Succeed())
+			output := filepath.Join(GinkgoT().TempDir(), "export")
+
+			stdout, stderr, err := runCLIStreams("stage-output", "--source="+source, "--output="+output)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stdout).To(BeEmpty())
+			Expect(stderr).To(ContainSubstring("Staging build output from " + source + "/out into " + output))
+			Expect(stderr).To(ContainSubstring("Staged build output into " + output))
+		})
+	})
+
+	Describe("pack", func() {
+		It("logs the archive it writes", func() {
+			root := GinkgoT().TempDir()
+			inputs := filepath.Join(root, "inputs", "0", "out")
+			Expect(os.MkdirAll(inputs, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(inputs, "hello.txt"), []byte("hello\n"), 0o644)).To(Succeed())
+			archive := filepath.Join(root, "payload.tar.gz")
+
+			stdout, stderr, err := runCLIStreams(
+				"pack",
+				"--inputs="+filepath.Join(root, "inputs"),
+				"--package="+filepath.Join(root, "package"),
+				"--archive="+archive,
+				"--layout=flat",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stdout).To(BeEmpty())
+			Expect(stderr).To(ContainSubstring("Packing flat layout from " + filepath.Join(root, "inputs") + " into " + archive))
+			Expect(stderr).To(ContainSubstring("Packed " + archive))
+			Expect(stderr).To(ContainSubstring("using flat layout"))
 		})
 	})
 

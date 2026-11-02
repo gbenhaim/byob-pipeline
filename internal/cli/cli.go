@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/gbenhaim/byob-pipeline/internal/artifact"
 	"github.com/gbenhaim/byob-pipeline/internal/remote"
@@ -46,6 +47,7 @@ func newPrepareCommand() *cobra.Command {
 		Short: "Restore build inputs, validate source, and prepare the build home",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(command *cobra.Command, args []string) error {
+			stderr := command.ErrOrStderr()
 			if inputs != "" {
 				if err := restoreInputs(
 					command.Context(),
@@ -53,7 +55,7 @@ func newPrepareCommand() *cobra.Command {
 					args,
 					false,
 					command.OutOrStdout(),
-					command.ErrOrStderr(),
+					stderr,
 				); err != nil {
 					return err
 				}
@@ -61,6 +63,7 @@ func newPrepareCommand() *cobra.Command {
 				return fmt.Errorf("--inputs is required when artifact references are supplied")
 			}
 
+			report(stderr, "Preparing source %s", source)
 			if err := artifact.Prepare(source); err != nil {
 				return err
 			}
@@ -69,6 +72,7 @@ func newPrepareCommand() *cobra.Command {
 				return fmt.Errorf("create build home: %w", err)
 			}
 
+			report(stderr, "Prepared source %s and created build home %s", source, home)
 			return nil
 		},
 	}
@@ -86,8 +90,20 @@ func newStageOutputCommand() *cobra.Command {
 		Use:   "stage-output",
 		Short: "Stage validated build outputs for export",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			return artifact.StageOutput(source, output, platform)
+		RunE: func(command *cobra.Command, _ []string) error {
+			stderr := command.ErrOrStderr()
+			report(stderr, "Staging build output from %s/out into %s", source, output)
+			if err := artifact.StageOutput(source, output, platform); err != nil {
+				return err
+			}
+
+			if platform != "" {
+				report(stderr, "Staged build output for %s into %s", platform, output)
+				return nil
+			}
+
+			report(stderr, "Staged build output into %s", output)
+			return nil
 		},
 	}
 
@@ -121,8 +137,20 @@ func newPackCommand() *cobra.Command {
 		Use:   "pack",
 		Short: "Package validated artifact outputs",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			return artifact.Pack(inputs, output, archive, layout)
+		RunE: func(command *cobra.Command, _ []string) error {
+			stderr := command.ErrOrStderr()
+			report(stderr, "Packing %s layout from %s into %s", layout, inputs, archive)
+			if err := artifact.Pack(inputs, output, archive, layout); err != nil {
+				return err
+			}
+
+			info, err := os.Stat(archive)
+			if err != nil {
+				return err
+			}
+
+			report(stderr, "Packed %s (%d bytes) using %s layout", archive, info.Size(), layout)
+			return nil
 		},
 	}
 
@@ -209,8 +237,15 @@ func newCheckCommandCommand() *cobra.Command {
 		Use:   "check-command [flags] -- COMMAND [ARG...]",
 		Short: "Record the trusted build argv",
 		Args:  requireBuildCommand,
-		RunE: func(_ *cobra.Command, args []string) error {
-			return remote.WriteBuildCommand(commandFile, args)
+		RunE: func(command *cobra.Command, args []string) error {
+			stderr := command.ErrOrStderr()
+			report(stderr, "Recording build command %s", quotedArgs(args))
+			if err := remote.WriteBuildCommand(commandFile, args); err != nil {
+				return err
+			}
+
+			report(stderr, "Recorded build command in %s", commandFile)
+			return nil
 		},
 	}
 
@@ -246,6 +281,21 @@ func newRemoteBuildCommand() *cobra.Command {
 	command.Flags().StringVar(&opts.BuilderImage, "image", "", "digest-pinned developer image")
 	command.Flags().StringVar(&commandFile, "command-file", "/var/workdir/control/build-cmd", "recorded build argv")
 	return command
+}
+
+// report writes one progress line to the Task step log.
+func report(w io.Writer, format string, args ...any) {
+	fmt.Fprintf(w, format+"\n", args...)
+}
+
+// quotedArgs renders argv so a log line keeps arguments distinct.
+func quotedArgs(args []string) string {
+	quoted := make([]string, len(args))
+	for index, arg := range args {
+		quoted[index] = fmt.Sprintf("%q", arg)
+	}
+
+	return strings.Join(quoted, " ")
 }
 
 // requireBuildArguments keeps additional arguments behind the option terminator.

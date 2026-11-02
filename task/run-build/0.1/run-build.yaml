@@ -79,10 +79,13 @@ spec:
   - name: prepare-source
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
     command:
-    - /bin/chown
+    - /bin/sh
     args:
-    - 1000:0
-    - /var/source
+    - -c
+    - |
+      printf 'Giving uid 1000 ownership of /var/source\n' >&2
+      /bin/chown 1000:0 /var/source
+      printf 'Prepared /var/source for the build user\n' >&2
     securityContext:
       runAsUser: 0
       runAsGroup: 0
@@ -98,7 +101,19 @@ spec:
       mountPath: /var/source
   - name: restore
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+    command:
+    - /bin/sh
     args:
+    - -c
+    - |
+      printf 'Restoring source artifact %s\n' "$2" >&2
+      /usr/local/bin/entrypoint "$@"
+      status=$?
+      if [ "$status" -eq 0 ]; then
+        printf 'Restored source artifact into /var/source\n' >&2
+      fi
+      exit "$status"
+    - restore
     - use
     - $(params.SOURCE_ARTIFACT)=/var/source
     volumeMounts:
@@ -195,7 +210,19 @@ spec:
     - --output=/var/build-output
   - name: export
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+    command:
+    - /bin/sh
     args:
+    - -c
+    - |
+      printf 'Exporting build output to %s\n' "$3" >&2
+      /usr/local/bin/entrypoint "$@"
+      status=$?
+      if [ "$status" -eq 0 ]; then
+        printf 'Exported build output to %s\n' "$3" >&2
+      fi
+      exit "$status"
+    - export
     - create
     - --store
     - $(params.ociStorage):$(context.taskRun.name)

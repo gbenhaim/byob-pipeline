@@ -1,5 +1,3 @@
-//go:build system
-
 package system
 
 import (
@@ -18,12 +16,16 @@ import (
 )
 
 const (
-	namespace = "byob-system"
+	defaultNamespace   = "byob-system"
+	defaultApplication = "sample-component"
 	// registryHost matches the Kind registry certificate. That certificate is
 	// not valid for the svc.cluster.local form of this name.
 	registryHost = "registry-service.kind-registry"
 	caPath       = "/etc/pki/tls/certs/ca-custom-bundle.crt"
 )
+
+// namespace is the namespace the suite uses. useTestNamespace sets it.
+var namespace = defaultNamespace
 
 // clusterMode returns existing, which is the only mode the test accepts.
 func clusterMode() (string, error) {
@@ -62,6 +64,27 @@ func kindClusterName() (string, error) {
 	}
 
 	return clusters[0], nil
+}
+
+// useTestNamespace selects BYOB_NAMESPACE, or the default namespace the suite creates.
+func useTestNamespace() {
+	if name := strings.TrimSpace(os.Getenv("BYOB_NAMESPACE")); name != "" {
+		namespace = name
+	}
+}
+
+// providedNamespace reports whether the caller chose an existing namespace.
+func providedNamespace() bool {
+	return strings.TrimSpace(os.Getenv("BYOB_NAMESPACE")) != ""
+}
+
+// applicationName returns the Konflux application and component label value.
+func applicationName() string {
+	if name := strings.TrimSpace(os.Getenv("BYOB_APPLICATION")); name != "" {
+		return name
+	}
+
+	return defaultApplication
 }
 
 // useKindKubeconfig points kubectl at the selected Kind cluster.
@@ -157,32 +180,43 @@ func registryCA() string {
 	return string(pem)
 }
 
-// repoRoot returns the repository directory that contains go.mod.
+// repoRoot returns the catalog directory that contains the byob pipeline.
 func repoRoot() string {
 	GinkgoHelper()
 	dir, err := os.Getwd()
 	Expect(err).NotTo(HaveOccurred())
 	for {
-		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+		if _, statErr := os.Stat(filepath.Join(dir, "pipelines", "byob.yaml")); statErr == nil {
 			return dir
 		}
 
 		parent := filepath.Dir(dir)
-		Expect(parent).NotTo(Equal(dir), "go.mod not found from %s", dir)
+		Expect(parent).NotTo(Equal(dir), "pipelines/byob.yaml not found from %s", dir)
 		dir = parent
 	}
 }
 
-// prepareNamespace creates the test namespace, registry CA, and catalog objects.
+// prepareNamespace installs the registry CA and catalog objects.
+// A caller-provided namespace is left in place and must already exist.
 func prepareNamespace(caPEM string) {
 	GinkgoHelper()
-	_, _, err := kubectl("delete", "namespace", namespace, "--wait=true", "--ignore-not-found=true")
-	Expect(err).NotTo(HaveOccurred())
-	mustKubectl("create", "namespace", namespace)
+	if providedNamespace() {
+		mustKubectl("get", "namespace", namespace)
+	} else {
+		_, _, err := kubectl("delete", "namespace", namespace, "--wait=true", "--ignore-not-found=true")
+		Expect(err).NotTo(HaveOccurred())
+		mustKubectl("create", "namespace", namespace)
+	}
 
 	caFile := filepath.Join(GinkgoT().TempDir(), "ca.crt")
-	Expect(os.WriteFile(caFile, []byte(caPEM), 0644)).To(Succeed())
-	mustKubectl("create", "configmap", "trusted-ca", "-n", namespace, "--from-file=ca-bundle.crt="+caFile)
+	Expect(os.WriteFile(caFile, []byte(registryCABundle(caPEM)), 0644)).To(Succeed())
+	manifest, stderr, err := kubectl(
+		"create", "configmap", "trusted-ca", "-n", namespace,
+		"--from-file=ca-bundle.crt="+caFile,
+		"--dry-run=client", "-o", "yaml",
+	)
+	Expect(err).NotTo(HaveOccurred(), "render trusted-ca: %s", stderr)
+	mustKubectlStdin(manifest, "apply", "-f", "-")
 
 	root := repoRoot()
 	mustKubectl(
@@ -193,6 +227,29 @@ func prepareNamespace(caPEM string) {
 		"-f", filepath.Join(root, "pipelines/byob.yaml"),
 	)
 	installRegistryAuth()
+}
+
+// registryCABundle returns the namespace trust bundle with the registry CA added.
+func registryCABundle(caPEM string) string {
+	GinkgoHelper()
+	stdout, stderr, err := kubectl(
+		"get", "configmap", "-n", namespace, "trusted-ca",
+		"-o", `jsonpath={.data.ca-bundle\.crt}`,
+	)
+	if err != nil {
+		Expect(stderr).To(ContainSubstring("NotFound"), "read trusted-ca: %s%s", stdout, stderr)
+		return caPEM
+	}
+
+	if strings.Contains(stdout, strings.TrimSpace(caPEM)) {
+		return stdout
+	}
+
+	if stdout != "" && !strings.HasSuffix(stdout, "\n") {
+		stdout += "\n"
+	}
+
+	return stdout + caPEM
 }
 
 // installRegistryAuth copies the Kind registry client credential into the test
@@ -228,9 +285,10 @@ func installRegistryAuth() {
 	)
 }
 
-// deleteNamespace removes the test namespace unless BYOB_SYSTEM_KEEP=1.
+// deleteNamespace removes the suite-created namespace.
+// BYOB_NAMESPACE and BYOB_SYSTEM_KEEP=1 both leave the namespace in place.
 func deleteNamespace() {
-	if os.Getenv("BYOB_SYSTEM_KEEP") == "1" {
+	if os.Getenv("BYOB_SYSTEM_KEEP") == "1" || providedNamespace() {
 		return
 	}
 

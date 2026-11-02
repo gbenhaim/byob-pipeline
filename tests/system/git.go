@@ -1,5 +1,3 @@
-//go:build system
-
 package system
 
 import (

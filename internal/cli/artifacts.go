@@ -32,11 +32,17 @@ func restoreInputs(ctx context.Context, root string, refs []string, required boo
 		return err
 	}
 
+	if len(refs) == 0 {
+		report(stderr, "No build artifacts to restore into %s", root)
+		return nil
+	}
+
 	env, err := commandEnvironment()
 	if err != nil {
 		return err
 	}
 
+	report(stderr, "Restoring %d build artifact(s) into %s", len(refs), root)
 	for index, ref := range refs {
 		if !artifactReference.MatchString(ref) {
 			return fmt.Errorf("invalid build artifact reference %q", ref)
@@ -47,11 +53,14 @@ func restoreInputs(ctx context.Context, root string, refs []string, required boo
 			return err
 		}
 
+		report(stderr, "Restoring build artifact %d from %s", index, ref)
 		cmd := exec.CommandContext(ctx, "use-archive", ref+"="+destination)
 		cmd.Stdout, cmd.Stderr, cmd.Env = stdout, stderr, env
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("restore input %d: %w", index, err)
 		}
+
+		report(stderr, "Restored build artifact %d into %s", index, destination)
 	}
 
 	return nil
@@ -68,6 +77,7 @@ func publish(ctx context.Context, opts publishOptions, stderr io.Writer) error {
 		return err
 	}
 
+	report(stderr, "Publishing %s to %s as %s", filepath.Join(opts.Workdir, "payload.tar.gz"), opts.Image, opts.ArtifactType)
 	env, authfile, err := publishEnvironment(opts.AuthDir)
 	if err != nil {
 		return err
@@ -78,7 +88,12 @@ func publish(ctx context.Context, opts publishOptions, stderr io.Writer) error {
 		return err
 	}
 
-	return writePublishResults(opts, digest)
+	if err := writePublishResults(opts, digest); err != nil {
+		return err
+	}
+
+	report(stderr, "Published %s with digest %s", opts.Image, digest)
+	return nil
 }
 
 // validatePublishOptions requires the subject metadata and all result destinations.
