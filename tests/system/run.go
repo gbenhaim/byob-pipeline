@@ -21,10 +21,10 @@ type resultValue struct {
 	Value string `json:"value"`
 }
 
-// submitPipelineRun creates the byob PipelineRun and returns its name and output image.
-func submitPipelineRun(gitURL, revision string) (string, string) {
+// submitPipelineRun creates a PipelineRun and returns its name and output image.
+func submitPipelineRun(pipeline, gitURL, revision string) (string, string) {
 	GinkgoHelper()
-	name := fmt.Sprintf("byob-system-%d", time.Now().Unix())
+	name := fmt.Sprintf("%s-%d", pipeline, time.Now().Unix())
 	image := fmt.Sprintf("%s/%s/output:%s", registryHost, namespace, name)
 	storage := fmt.Sprintf("%s/%s/ta", registryHost, namespace)
 	manifest := fmt.Sprintf(`apiVersion: tekton.dev/v1
@@ -39,7 +39,7 @@ spec:
   taskRunTemplate:
     serviceAccountName: byob-build
   pipelineRef:
-    name: byob
+    name: %s
   params:
   - name: git-url
     value: %q
@@ -49,15 +49,36 @@ spec:
     value: %q
   - name: oci-storage
     value: %q
-`, name, namespace, applicationName(), applicationName(), gitURL, revision, image, storage)
+`, name, namespace, applicationName(), applicationName(), pipeline, gitURL, revision, image, storage)
 	mustKubectlStdin(manifest, "create", "-f", "-")
 	return name, image
 }
 
 // waitSucceeded polls until the PipelineRun succeeds or stops early on failure.
-func waitSucceeded(name string) {
+// An optional early channel fails the wait as soon as it receives an error.
+func waitSucceeded(name string, early ...<-chan error) {
 	GinkgoHelper()
+	var earlyCh <-chan error
+	if len(early) > 0 {
+		earlyCh = early[0]
+	}
+
+	earlyDone := earlyCh == nil
+	var earlyErr error
 	Eventually(func() error {
+		if !earlyDone {
+			select {
+			case err := <-earlyCh:
+				earlyDone = true
+				earlyErr = err
+			default:
+			}
+		}
+
+		if earlyErr != nil {
+			return StopTrying(fmt.Sprintf("setup failed: %v\n%s", earlyErr, diagnostics(name)))
+		}
+
 		phase, message := pipelineStatus(name)
 		if phase == "True" {
 			return nil
@@ -107,8 +128,8 @@ func pipelineResults(name string) map[string]string {
 	return results
 }
 
-// expectTaskRunsSucceeded requires checkout, build, and pack to succeed.
-func expectTaskRunsSucceeded(name string) {
+// expectTaskRunsSucceeded requires each named PipelineTask to succeed.
+func expectTaskRunsSucceeded(name string, tasks ...string) {
 	GinkgoHelper()
 	raw := mustKubectl(
 		"get", "taskruns", "-n", namespace,
@@ -137,7 +158,7 @@ func expectTaskRunsSucceeded(name string) {
 		}
 	}
 
-	for _, taskName := range []string{"checkout", "build", "pack"} {
+	for _, taskName := range tasks {
 		Expect(succeeded).To(HaveKey(taskName), "TaskRun %s did not succeed\n%s", taskName, diagnostics(name))
 	}
 }
@@ -154,6 +175,12 @@ func expectNoGitAuth(name string) {
 
 // pullHello downloads the published artifact and returns hello.txt.
 func pullHello(reference string) string {
+	GinkgoHelper()
+	return pullMember(reference, "hello.txt")
+}
+
+// pullMember downloads the published artifact and returns one archive member.
+func pullMember(reference, member string) string {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: v1
 kind: Pod
@@ -172,6 +199,8 @@ spec:
     - %q
     env:
     - name: REF
+      value: %q
+    - name: MEMBER
       value: %q
     - name: SSL_CERT_FILE
       value: %s
@@ -209,7 +238,7 @@ spec:
       items:
       - key: ca-bundle.crt
         path: ca-bundle.crt
-`, namespace, `if [ -s /var/run/byob-registry-auth/config.json ]; then export DOCKER_CONFIG=/var/run/byob-registry-auth; fi; oras pull "$REF" >/tmp/oras.log 2>&1 || { cat /tmp/oras.log >&2; exit 1; }; tar -xOf payload.tar.gz hello.txt`, reference, caPath, caPath)
+`, namespace, `if [ -s /var/run/byob-registry-auth/config.json ]; then export DOCKER_CONFIG=/var/run/byob-registry-auth; fi; oras pull "$REF" >/tmp/oras.log 2>&1 || { cat /tmp/oras.log >&2; exit 1; }; tar -xOf payload.tar.gz "$MEMBER"`, reference, member, caPath, caPath)
 	_, _, _ = kubectl("delete", "pod", "-n", namespace, "byob-pull", "--ignore-not-found=true", "--wait=true")
 	mustKubectlStdin(manifest, "apply", "-f", "-")
 

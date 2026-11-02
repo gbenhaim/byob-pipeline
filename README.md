@@ -118,7 +118,13 @@ internal registry at `registry-service.kind-registry`, the name on the Kind
 registry certificate. `BYOB_GIT_URL` defaults to
 `https://github.com/gbenhaim/byob-pipeline`. `BYOB_GIT_REF` defaults to the
 current local branch. That ref must already be pushed, and the commit must
-contain an executable root `build.sh`. No Git credentials are created. When
+contain an executable root `build.sh`. The chained run also needs an executable
+`scripts/generate.sh` whose `out/generated.txt` is copied into the build
+output. The remote run requests `linux/arm64`. When the multi-platform
+controller is ready, that controller creates the SSH secret and chooses the
+host. When it is not installed, the test creates the localhost secret the
+controller would create for a local platform, and the build runs in the
+cluster. No Git credentials are created. When
 `kind-registry/internal-registry-client-auth` exists, the test copies it to
 `byob-registry-auth` and attaches it to `byob-build` so Trusted Artifacts can
 push. Set `BYOB_SYSTEM_KEEP=1` to leave the suite-created namespace after the run.

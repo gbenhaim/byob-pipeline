@@ -43,7 +43,7 @@ var _ = Describe("byob pipeline", Ordered, func() {
 
 	It("completes the PipelineRun", func() {
 		gitURL, revision = sourceRevision(repoRoot())
-		name, image = submitPipelineRun(gitURL, revision)
+		name, image = submitPipelineRun("byob", gitURL, revision)
 		waitSucceeded(name)
 	})
 
@@ -64,7 +64,7 @@ var _ = Describe("byob pipeline", Ordered, func() {
 	})
 
 	It("succeeds at checkout, build, and pack", func() {
-		expectTaskRunsSucceeded(name)
+		expectTaskRunsSucceeded(name, "checkout", "build", "pack")
 	})
 
 	It("binds no Git credential workspace", func() {
