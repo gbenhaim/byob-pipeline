@@ -11,13 +11,44 @@ spec:
   - name: SNAPSHOT
     type: string
     description: Snapshot spec supplied by the integration service.
+  results:
+  - name: TEST_OUTPUT
+    description: Short summary of the policy evaluation for each image.
+    value: $(tasks.validate.results.TEST_OUTPUT)
   tasks:
   - name: validate
     taskSpec:
-      steps:
-      - name: validate
+      results:
+      - name: TEST_OUTPUT
+        description: Short summary of the policy evaluation for each image.
+      stepTemplate:
         image: quay.io/conforma/cli@sha256:a0cb6fcce80c6d0775e72802e4da58f050ca32ba32e1ea068d314df4a9536837
         workingDir: /tmp
+        env:
+        - name: HOME
+          value: /tmp
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: policy
+          mountPath: /policy
+          readOnly: true
+        - name: certs
+          mountPath: /certs
+          readOnly: true
+        - name: registry-auth
+          mountPath: /auth
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      steps:
+      - name: validate
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -75,32 +106,43 @@ spec:
             jq -r '.payload' /tmp/envelope.json | base64 -d > "/tmp/statements/$${n}.json"
           done
           jq -s '{kind: "AttestationList", items: .}' /tmp/statements/*.json > /tmp/input.json
-          ec validate input /tmp/input.json --policy /policy/policy.yaml
+          ec validate input /tmp/input.json --policy /policy/policy.yaml \
+            --strict=false \
+            --info \
+            --show-successes=false \
+            --output json=/tmp/report.json \
+            --output text=/tmp/report.txt
+          jq '
+            ([.filepaths[] | (.violations | length)] | add // 0) as $failures |
+            ([.filepaths[] | (.warnings | length)] | add // 0) as $warnings |
+            ([.filepaths[] | (."success-count")] | add // 0) as $successes |
+            {
+              timestamp: (now | strftime("%Y-%m-%dT%H:%M:%SZ")),
+              namespace: "",
+              successes: $successes,
+              failures: $failures,
+              warnings: $warnings,
+              result: (
+                if $failures > 0 then "FAILURE"
+                elif $warnings > 0 then "WARNING"
+                else "SUCCESS"
+                end
+              )
+            }
+          ' /tmp/report.json > "$(results.TEST_OUTPUT.path)"
         env:
-        - name: HOME
-          value: /tmp
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 1001
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop: ["ALL"]
-          seccompProfile:
-            type: RuntimeDefault
-        volumeMounts:
-        - name: policy
-          mountPath: /policy
-          readOnly: true
-        - name: certs
-          mountPath: /certs
-          readOnly: true
-        - name: registry-auth
-          mountPath: /auth
-          readOnly: true
-        - name: tmp
-          mountPath: /tmp
+      - name: summary
+        command: ["jq", "."]
+        args: ["$(results.TEST_OUTPUT.path)"]
+      - name: report
+        command: ["cat", "/tmp/report.txt"]
+      - name: assert
+        command: ["jq", "-e"]
+        args:
+        - .result == "SUCCESS" or .result == "WARNING"
+        - $(results.TEST_OUTPUT.path)
       volumes:
       - name: policy
         configMap:

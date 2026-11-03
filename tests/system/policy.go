@@ -72,7 +72,8 @@ spec:
 }
 
 // waitPolicyResult waits until the scenario accepts the attestation or fails with failureCode.
-// An empty failureCode requires the integration PipelineRun to succeed.
+// An empty failureCode requires TEST_OUTPUT result SUCCESS. A failure code requires
+// result FAILURE and that code in the task logs.
 func waitPolicyResult(snapshot, failureCode string) {
 	GinkgoHelper()
 	Eventually(func() error {
@@ -81,7 +82,16 @@ func waitPolicyResult(snapshot, failureCode string) {
 			return fmt.Errorf("waiting for the integration PipelineRun\n%s", message)
 		}
 
+		result, resultErr := policyResult(name)
 		if status == "True" && failureCode == "" {
+			if resultErr != nil {
+				return resultErr
+			}
+
+			if result != "SUCCESS" {
+				return StopTrying(fmt.Sprintf("TEST_OUTPUT result %q\n%s", result, policyLogs(name)))
+			}
+
 			return nil
 		}
 
@@ -95,11 +105,15 @@ func waitPolicyResult(snapshot, failureCode string) {
 
 		if status == "False" {
 			logs := policyLogs(name)
-			if strings.Contains(logs, failureCode) {
+			if resultErr != nil {
+				return fmt.Errorf("read TEST_OUTPUT: %w\n%s", resultErr, logs)
+			}
+
+			if result == "FAILURE" && strings.Contains(logs, failureCode) {
 				return nil
 			}
 
-			return StopTrying(fmt.Sprintf("policy failed without %s\n%s\n%s", failureCode, message, logs))
+			return StopTrying(fmt.Sprintf("policy result %q failed without %s\n%s\n%s", result, failureCode, message, logs))
 		}
 
 		return fmt.Errorf("PipelineRun %s status %q: %s\n%s", name, status, message, policyLogs(name))
@@ -143,6 +157,44 @@ func policyRunStatus(snapshot string) (string, string, string) {
 	}
 
 	return item.Metadata.Name, "", "Succeeded condition is absent"
+}
+
+// policyResult returns the TEST_OUTPUT result field from the integration PipelineRun.
+func policyResult(name string) (string, error) {
+	raw, stderr, err := kubectl("get", "pipelinerun", "-n", namespace, name, "-o", "json")
+	if err != nil {
+		return "", fmt.Errorf("read PipelineRun: %w\n%s%s", err, raw, stderr)
+	}
+
+	var body struct {
+		Status struct {
+			Results []resultValue `json:"results"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		return "", fmt.Errorf("decode PipelineRun: %w", err)
+	}
+
+	for _, item := range body.Status.Results {
+		if item.Name != "TEST_OUTPUT" {
+			continue
+		}
+
+		var report struct {
+			Result string `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(item.Value), &report); err != nil {
+			return "", fmt.Errorf("decode TEST_OUTPUT: %w", err)
+		}
+
+		if report.Result == "" {
+			return "", fmt.Errorf("TEST_OUTPUT has no result")
+		}
+
+		return report.Result, nil
+	}
+
+	return "", fmt.Errorf("TEST_OUTPUT is absent")
 }
 
 // policyLogs returns the integration PipelineRun logs.

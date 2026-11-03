@@ -99,53 +99,93 @@ same `git-auth` workspace binding to the PipelineRun and ensure the Secret
 exists in that PipelineRun's namespace. Do not commit Secret data or credential
 files.
 
-## System test
+## Tests
 
-`make system-test` runs the `byob` pipeline on a Kind cluster that already has
-Konflux installed. The suite is the separate module `tests/system`, so it is
-not part of `make check`. The default
-`BYOB_CLUSTER=existing` never installs or deletes the cluster. When more than
-one Kind cluster exists, set `BYOB_KIND_CLUSTER` to the cluster name.
-`BYOB_KUBE_CONTEXT` selects a context inside that cluster's kubeconfig.
-`BYOB_NAMESPACE` runs in an existing namespace and does not delete it. Without
-that variable the suite creates and deletes `byob-system`. Each PipelineRun is
-labeled `appstudio.openshift.io/application` and
-`appstudio.openshift.io/component` with `BYOB_APPLICATION`, which defaults to
-`sample-component`.
+### Catalog checks
 
-The test checks out a public GitHub commit and publishes to the cluster's
-internal registry at `registry-service.kind-registry`, the name on the Kind
-registry certificate. `BYOB_GIT_URL` defaults to
-`https://github.com/gbenhaim/byob-pipeline`. `BYOB_GIT_REF` defaults to the
-current local branch. That ref must already be pushed, and the commit must
-contain an executable root `build.sh`. The chained run also needs an executable
-`scripts/generate.sh` whose `out/generated.txt` is copied into the build
-output. The remote run requests `linux/arm64`. The matrix run requests `linux/amd64`
-and `linux/arm64`, and the published archive contains `linux-amd64/hello.txt`
-and `linux-arm64/hello.txt`. When the multi-platform controller is ready, that
-controller creates the SSH secret and chooses the host. When it is not
-installed, the test creates the localhost secret the controller would create
-for a local platform, and the build runs in the cluster. The suite also
-creates an integration test scenario that runs the Conforma policy in
-[policy](policy/) against the Chains attestation of a build. One build
-overrides task resource requests and limits and must pass. A build that
-changes the pack artifact type must fail. A build whose `SOURCE_ARTIFACT` is
-a trusted artifact from another run, rather than this run's checkout or a
-previous build task, must fail. No Git
-credentials are created. When
-`kind-registry/internal-registry-client-auth` exists, the test copies it to
-`byob-registry-auth` and attaches it to `byob-build` so Trusted Artifacts can
-push. Set `BYOB_SYSTEM_KEEP=1` to leave the suite-created namespace after the run.
+`make check` does not use a cluster. It needs Go 1.27 and ShellCheck. It runs
+the Go tests, `gofmt`, `go vet`, ShellCheck, a check that the generated remote
+Task matches its source, and Tekton admission validation of the Tasks,
+Pipelines, PipelineRun examples, and the policy Pipeline.
 
-`BYOB_CLUSTER=install` does not install anything. It prints the one-time Kind
-setup and exits. From a `konflux-ci` checkout, set `KIND_MEMORY_GB=16` and run:
+### System tests
+
+`make system-test` runs `byob`, `byob-chained`, `byob-remote`, `byob-matrix`,
+and the Conforma integration scenario. The suite is the module `tests/system`,
+so it is not part of `make check`. It never installs or deletes the Kind
+cluster or Konflux.
+
+Prerequisites:
+
+- Go 1.27.
+- Rootless Podman. The target builds `localhost/byob-cli:devel` and loads it
+  into Kind.
+- `kind` and `kubectl`. When Kind uses Podman, export
+  `KIND_EXPERIMENTAL_PROVIDER=podman`.
+- A Ready Konflux Kind cluster with Tekton Pipelines, the bundles resolver,
+  Chains, and the integration service.
+- The Kind registry Service `registry-service` in namespace `kind-registry`,
+  and the TLS Secret `kind-registry/local-registry-tls`.
+- When that registry requires authentication, the Secret
+  `kind-registry/internal-registry-client-auth`. The suite copies it to
+  `byob-registry-auth` and attaches it to `byob-build`.
+- A public Git branch that is already pushed. Its commit must contain an
+  executable root `build.sh`. The chained run also needs an executable
+  `scripts/generate.sh` whose `out/generated.txt` is copied into the build
+  output. `https://github.com/gbenhaim/byob-system-fixture` branch `main`
+  satisfies that contract.
+
+The multi-platform controller is optional. The remote run requests
+`linux/arm64`. The matrix run requests `linux/amd64` and `linux/arm64`. When
+the controller is ready, it creates the SSH secret and chooses the host. When
+it is not installed, the test creates the localhost secret the controller
+would create for a local platform, and the build runs in the cluster. The
+matrix archive then contains `linux-amd64/hello.txt` and
+`linux-arm64/hello.txt`. No Git credentials are created. Runs publish to
+`registry-service.kind-registry`, the name on the Kind registry certificate.
 
 ```sh
 export KIND_EXPERIMENTAL_PROVIDER=podman
+export BYOB_CLUSTER=existing
+export BYOB_KIND_CLUSTER=konflux
+export BYOB_NAMESPACE=YOUR_EXISTING_NAMESPACE
+export BYOB_GIT_URL=https://github.com/gbenhaim/byob-system-fixture
+export BYOB_GIT_REF=main
+make system-test
+```
+
+- `BYOB_CLUSTER` defaults to `existing`. `install` does not install a cluster.
+  It prints the one-time Kind setup and exits.
+- `BYOB_KIND_CLUSTER` is required when more than one Kind cluster exists.
+- `BYOB_KUBE_CONTEXT` selects a context inside that cluster's kubeconfig.
+- `BYOB_NAMESPACE` uses an existing namespace and does not delete it. Without
+  it, the suite creates and deletes `byob-system`.
+- `BYOB_SYSTEM_KEEP=1` leaves a suite-created namespace in place.
+- `BYOB_APPLICATION` defaults to `sample-component`. PipelineRuns set
+  `appstudio.openshift.io/application` and
+  `appstudio.openshift.io/component` to that value.
+- `BYOB_GIT_URL` defaults to `https://github.com/gbenhaim/byob-pipeline`.
+- `BYOB_GIT_REF` defaults to the current local branch. That branch must exist
+  on the remote.
+
+The policy specs install Application `byob-slsa`, IntegrationTestScenario
+`byob-pipeline-policy`, and ConfigMap `byob-pipeline-policy` from
+[policy](policy/). One build overrides task resource requests and limits and
+must pass. A build that changes the pack artifact type must fail with
+`policy.artifact_pack`. A build whose `SOURCE_ARTIFACT` is a trusted artifact
+from another run, rather than this run's checkout or a previous build task,
+must fail with `policy.artifact_source`. Each scenario run records
+`TEST_OUTPUT`.
+
+From a `konflux-ci` checkout, the one-time Kind setup is:
+
+```sh
+export KIND_EXPERIMENTAL_PROVIDER=podman
+export KIND_MEMORY_GB=16
 SKIP_SECRETS=true ./scripts/deploy-local.sh
 ```
 
-Then rerun `make system-test`.
+Then rerun `make system-test` with `BYOB_CLUSTER=existing`.
 
 ## Publish for Pipelines-as-Code
 
@@ -232,6 +272,14 @@ same attestation. Resource requests and limits may be overridden.
 [examples/integration](examples/integration/) runs that policy from a Konflux
 integration test scenario.
 
+The scenario Pipeline records `TEST_OUTPUT` in the same shape as the upstream
+[enterprise-contract Pipeline](https://github.com/conforma/tekton-catalog/blob/main/pipelines/enterprise-contract/0.1/enterprise-contract.yaml).
+The result contains `timestamp`, `namespace`, `successes`, `failures`,
+`warnings`, and `result` (`SUCCESS`, `WARNING`, or `FAILURE`). The task prints
+that summary and the rule report, then fails unless `result` is `SUCCESS` or
+`WARNING`. `ec validate input` does not write this summary itself, so the task
+builds it from the JSON report.
+
 Use the cluster's admission integration to evaluate policy before Task Pods
 start. It must allow only approved, immutable Task bundle references and
 platform-approved build literals, including the source revision, developer
@@ -254,9 +302,9 @@ See [examples/platform](examples/platform/) for the service-account example and
 
 ## Development
 
-Use Go 1.27 and ShellCheck. `make check` runs Go tests, lint and formatting
-checks, generated-Task drift checks, and Tekton manifest validation. `make image`
-builds the local CLI image and requires rootless Podman.
+Use Go 1.27 and ShellCheck. `make check` is described under
+[Tests](#tests). `make image` builds the local CLI image and requires rootless
+Podman.
 
 Edit the authored Tasks, Pipelines, or generator as needed.
 `task/run-build-remote/0.1/run-build-remote.yaml` is generated; run
