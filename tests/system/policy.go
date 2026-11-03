@@ -370,9 +370,16 @@ func applyUnsafeArtifactType() {
 }
 
 // restoreCatalogPipeline returns the byob pipeline to the catalog definition.
+// A missing namespace is left alone. The suite deletes that namespace while
+// it is cleaning up, and applying the pipeline there cannot succeed.
 func restoreCatalogPipeline() {
-	mustKubectl(
+	stdout, stderr, err := kubectl(
 		"apply", "-n", namespace,
 		"-f", filepath.Join(repoRoot(), "pipelines", "byob.yaml"),
 	)
+	if err != nil && strings.Contains(stderr, "not found") {
+		return
+	}
+
+	Expect(err).NotTo(HaveOccurred(), "kubectl apply -n %s -f pipelines/byob.yaml\n%s%s", namespace, stdout, stderr)
 }

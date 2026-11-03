@@ -35,6 +35,16 @@ var _ = Describe("byob pipeline policy", Ordered, func() {
 		deleteNamespace()
 	})
 
+	// Restore before AfterAll. A DeferCleanup in the spec runs after AfterAll
+	// deletes the namespace.
+	AfterEach(func() {
+		if !configured {
+			return
+		}
+
+		restoreCatalogPipeline()
+	})
+
 	It("accepts the Chains attestation when resource limits are overridden", func() {
 		gitURL, revision := sourceRevision(repoRoot())
 		image := submitAttestedRun(gitURL, revision)
@@ -43,7 +53,6 @@ var _ = Describe("byob pipeline policy", Ordered, func() {
 	})
 
 	It("rejects an attestation that changes the pack artifact type", func() {
-		DeferCleanup(restoreCatalogPipeline)
 		applyUnsafeArtifactType()
 		gitURL, revision := sourceRevision(repoRoot())
 		image := submitAttestedRun(gitURL, revision)
@@ -52,7 +61,6 @@ var _ = Describe("byob pipeline policy", Ordered, func() {
 	})
 
 	It("rejects a build input from outside this build", func() {
-		DeferCleanup(restoreCatalogPipeline)
 		gitURL, revision := sourceRevision(repoRoot())
 		producer, _ := submitPipelineRun("byob", gitURL, revision)
 		waitSucceeded(producer)
