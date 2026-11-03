@@ -14,6 +14,10 @@ jobs:
   system-test:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      # Podman records step image IDs as name@digest. Containerd records a
+      # bare sha256 for a Kind-loaded image, and Chains refuses to sign that.
+      KIND_EXPERIMENTAL_PROVIDER: podman
     steps:
       - name: Free disk space
         run: |
@@ -57,6 +61,7 @@ jobs:
             'events_logger = "file"' \
             > "${HOME}/.config/containers/containers.conf"
           podman info
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v4
         with:
           repository: konflux-ci/konflux-ci
@@ -65,8 +70,7 @@ jobs:
       - name: Deploy Konflux on Kind
         working-directory: konflux-ci
         env:
-          # Kind uses the runner's Docker. Podman is only for the Makefile image.
-          CONTAINER_TOOL: docker
+          CONTAINER_TOOL: podman
           KIND_CLUSTER: konflux
           OPERATOR_INSTALL_METHOD: release
           OPERATOR_RELEASE: v0.2.2
