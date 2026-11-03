@@ -2,6 +2,8 @@ name: Check catalog
 on:
   pull_request:
   push:
+    branches:
+      - main
 permissions:
   contents: read
 jobs:

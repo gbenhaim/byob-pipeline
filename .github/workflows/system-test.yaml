@@ -2,11 +2,13 @@ name: System tests
 on:
   pull_request:
   push:
+    branches:
+      - main
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: system-test-${{ github.ref }}
+  group: system-test-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   system-test:

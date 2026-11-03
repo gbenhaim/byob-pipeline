@@ -257,19 +257,50 @@ spec:
 }
 
 // waitSigned waits until Chains has signed the PipelineRun.
+// A failed annotation is terminal, so the wait stops instead of polling it.
 func waitSigned(name string) {
 	GinkgoHelper()
-	Eventually(func() string {
-		signed, _, err := kubectl(
+	Eventually(func() error {
+		signed, stderr, err := kubectl(
 			"get", "pipelinerun", "-n", namespace, name,
 			"-o", "jsonpath={.metadata.annotations.chains\\.tekton\\.dev/signed}",
 		)
 		if err != nil {
-			return ""
+			return fmt.Errorf("read chains signature: %w\n%s", err, stderr)
 		}
 
-		return strings.TrimSpace(signed)
-	}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Equal("true"))
+		switch strings.TrimSpace(signed) {
+		case "true":
+			return nil
+		case "failed":
+			return StopTrying("Chains failed to sign PipelineRun " + name + "\n" + chainsDiagnostics(name))
+		default:
+			return fmt.Errorf("chains.tekton.dev/signed=%q", strings.TrimSpace(signed))
+		}
+	}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+}
+
+// chainsDiagnostics returns Chains annotations and the controller log tail.
+func chainsDiagnostics(name string) string {
+	var builder strings.Builder
+	annotations, stderr, err := kubectl(
+		"get", "pipelinerun", "-n", namespace, name,
+		"-o", "jsonpath={.metadata.annotations}",
+	)
+	fmt.Fprintf(&builder, "annotations: %s%s\n", annotations, stderr)
+	if err != nil {
+		fmt.Fprintf(&builder, "read annotations: %v\n", err)
+	}
+
+	logs, logStderr, logErr := kubectl(
+		"logs", "-n", "tekton-pipelines", "deploy/tekton-chains-controller", "--tail=80",
+	)
+	fmt.Fprintf(&builder, "chains controller:\n%s%s\n", logs, logStderr)
+	if logErr != nil {
+		fmt.Fprintf(&builder, "read chains logs: %v\n", logErr)
+	}
+
+	return builder.String()
 }
 
 // attestedImage returns the digest reference Chains signed for the PipelineRun.

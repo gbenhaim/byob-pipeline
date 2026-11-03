@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -208,15 +209,8 @@ func prepareNamespace(caPEM string) {
 		mustKubectl("create", "namespace", namespace)
 	}
 
-	caFile := filepath.Join(GinkgoT().TempDir(), "ca.crt")
-	Expect(os.WriteFile(caFile, []byte(registryCABundle(caPEM)), 0644)).To(Succeed())
-	manifest, stderr, err := kubectl(
-		"create", "configmap", "trusted-ca", "-n", namespace,
-		"--from-file=ca-bundle.crt="+caFile,
-		"--dry-run=client", "-o", "yaml",
-	)
-	Expect(err).NotTo(HaveOccurred(), "render trusted-ca: %s", stderr)
-	mustKubectlStdin(manifest, "apply", "-f", "-")
+	applyTrustedCA(namespace, caPEM)
+	applyTrustedCA("tekton-pipelines", caPEM)
 
 	root := repoRoot()
 	mustKubectl(
@@ -233,27 +227,94 @@ func prepareNamespace(caPEM string) {
 	installRegistryAuth()
 }
 
-// registryCABundle returns the namespace trust bundle with the registry CA added.
-func registryCABundle(caPEM string) string {
+// applyTrustedCA merges the registry CA into trusted-ca in targetNamespace.
+// Trust-manager creates that ConfigMap when a namespace appears, so the first
+// apply can lose the create race. A missing ConfigMap outside the test
+// namespace is left alone, because replacing the controller bundle with only
+// the registry CA would drop the public roots Chains uses.
+func applyTrustedCA(targetNamespace, caPEM string) {
+	GinkgoHelper()
+	marker := strings.TrimSpace(caPEM)
+	var lastErr error
+
+	for attempt := 0; attempt < 15; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Second)
+		}
+
+		bundle, found := readTrustedCA(targetNamespace)
+		if !found && targetNamespace != namespace {
+			return
+		}
+
+		if !found {
+			bundle = caPEM
+		} else {
+			bundle = mergeTrustedCA(bundle, caPEM)
+		}
+
+		caFile := filepath.Join(GinkgoT().TempDir(), "ca.crt")
+		if err := os.WriteFile(caFile, []byte(bundle), 0644); err != nil {
+			lastErr = err
+			continue
+		}
+
+		manifest, stderr, err := kubectl(
+			"create", "configmap", "trusted-ca", "-n", targetNamespace,
+			"--from-file=ca-bundle.crt="+caFile,
+			"--dry-run=client", "-o", "yaml",
+		)
+		if err != nil {
+			Expect(err).NotTo(HaveOccurred(), "render trusted-ca: %s", stderr)
+		}
+
+		_, applyStderr, applyErr := kubectlStdin(manifest, "apply", "-f", "-")
+		if applyErr != nil {
+			if strings.Contains(applyStderr, "AlreadyExists") {
+				lastErr = fmt.Errorf("apply trusted-ca in %s: %s", targetNamespace, applyStderr)
+				continue
+			}
+
+			Expect(applyErr).NotTo(HaveOccurred(), "apply trusted-ca in %s\n%s", targetNamespace, applyStderr)
+		}
+
+		live, liveFound := readTrustedCA(targetNamespace)
+		if liveFound && strings.Contains(live, marker) {
+			return
+		}
+
+		lastErr = fmt.Errorf("trusted-ca in %s does not contain the registry CA", targetNamespace)
+	}
+
+	Expect(lastErr).NotTo(HaveOccurred())
+}
+
+// readTrustedCA returns the trusted-ca bundle and whether the ConfigMap exists.
+func readTrustedCA(targetNamespace string) (string, bool) {
 	GinkgoHelper()
 	stdout, stderr, err := kubectl(
-		"get", "configmap", "-n", namespace, "trusted-ca",
+		"get", "configmap", "-n", targetNamespace, "trusted-ca",
 		"-o", `jsonpath={.data.ca-bundle\.crt}`,
 	)
 	if err != nil {
 		Expect(stderr).To(ContainSubstring("NotFound"), "read trusted-ca: %s%s", stdout, stderr)
-		return caPEM
+		return "", false
 	}
 
-	if strings.Contains(stdout, strings.TrimSpace(caPEM)) {
-		return stdout
+	return stdout, true
+}
+
+// mergeTrustedCA appends caPEM when the bundle does not already contain it.
+func mergeTrustedCA(bundle, caPEM string) string {
+	if strings.TrimSpace(caPEM) == "" || strings.Contains(bundle, strings.TrimSpace(caPEM)) {
+		return bundle
 	}
 
-	if stdout != "" && !strings.HasSuffix(stdout, "\n") {
-		stdout += "\n"
+	if bundle != "" && !strings.HasSuffix(bundle, "\n") {
+		bundle += "\n"
 	}
 
-	return stdout + caPEM
+	return bundle + caPEM
 }
 
 // installRegistryAuth copies the Kind registry client credential into the test
