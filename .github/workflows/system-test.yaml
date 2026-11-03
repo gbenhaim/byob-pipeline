@@ -54,14 +54,8 @@ jobs:
           user="$(id -un)"
           grep -q "^${user}:" /etc/subuid || echo "${user}:100000:65536" | sudo tee -a /etc/subuid
           grep -q "^${user}:" /etc/subgid || echo "${user}:100000:65536" | sudo tee -a /etc/subgid
-          mkdir -p "${HOME}/.config/containers"
-          printf '%s\n' \
-            '[engine]' \
-            'cgroup_manager = "cgroupfs"' \
-            'events_logger = "file"' \
-            > "${HOME}/.config/containers/containers.conf"
-          podman info
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          podman info
       - uses: actions/checkout@v4
         with:
           repository: konflux-ci/konflux-ci
