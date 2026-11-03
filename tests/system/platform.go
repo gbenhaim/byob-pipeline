@@ -85,16 +85,79 @@ func platformController() (bool, bool, error) {
 	return installed, ready, nil
 }
 
+// provisionPlatformSecrets writes a localhost secret for each TaskRun of task
+// until count TaskRuns exist. A ready multi-platform controller creates those
+// secrets itself.
+func provisionPlatformSecrets(ctx context.Context, pipelineRun, task string, count int) error {
+	installed, ready, err := platformController()
+	if err != nil {
+		return err
+	}
+
+	if installed {
+		if !ready {
+			return fmt.Errorf("multi-platform-controller is installed but not ready")
+		}
+
+		return nil
+	}
+
+	ensured := map[string]struct{}{}
+	var lastErr error
+	for {
+		names, err := taskRunNames(pipelineRun, task)
+		if err != nil {
+			lastErr = err
+		}
+
+		for _, name := range names {
+			if _, ok := ensured[name]; ok {
+				continue
+			}
+
+			if err := ensureLocalhostSecret(name); err != nil {
+				return err
+			}
+
+			ensured[name] = struct{}{}
+		}
+
+		if len(ensured) >= count {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("%d %s TaskRuns for %s did not appear: %w", count, task, pipelineRun, lastErr)
+			}
+
+			return fmt.Errorf("%d %s TaskRuns for %s did not appear: %w", count, task, pipelineRun, ctx.Err())
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // taskRunName returns the TaskRun created for one PipelineTask.
 // An empty name means Tekton has not created it yet.
 func taskRunName(pipelineRun, task string) (string, error) {
+	names, err := taskRunNames(pipelineRun, task)
+	if err != nil || len(names) == 0 {
+		return "", err
+	}
+
+	return names[0], nil
+}
+
+// taskRunNames returns the TaskRuns created for one PipelineTask.
+func taskRunNames(pipelineRun, task string) ([]string, error) {
 	stdout, stderr, err := kubectl(
 		"get", "taskruns", "-n", namespace,
 		"-l", "tekton.dev/pipelineRun="+pipelineRun+",tekton.dev/pipelineTask="+task,
 		"-o", "json",
 	)
 	if err != nil {
-		return "", fmt.Errorf("list TaskRuns: %w\n%s%s", err, stdout, stderr)
+		return nil, fmt.Errorf("list TaskRuns: %w\n%s%s", err, stdout, stderr)
 	}
 
 	var body struct {
@@ -105,14 +168,15 @@ func taskRunName(pipelineRun, task string) (string, error) {
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &body); err != nil {
-		return "", fmt.Errorf("decode TaskRuns: %w", err)
+		return nil, fmt.Errorf("decode TaskRuns: %w", err)
 	}
 
-	if len(body.Items) == 0 {
-		return "", nil
+	names := make([]string, 0, len(body.Items))
+	for _, item := range body.Items {
+		names = append(names, item.Metadata.Name)
 	}
 
-	return body.Items[0].Metadata.Name, nil
+	return names, nil
 }
 
 // ensureLocalhostSecret creates the controller SSH secret for a local build.

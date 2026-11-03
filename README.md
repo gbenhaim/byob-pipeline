@@ -120,11 +120,19 @@ registry certificate. `BYOB_GIT_URL` defaults to
 current local branch. That ref must already be pushed, and the commit must
 contain an executable root `build.sh`. The chained run also needs an executable
 `scripts/generate.sh` whose `out/generated.txt` is copied into the build
-output. The remote run requests `linux/arm64`. When the multi-platform
-controller is ready, that controller creates the SSH secret and chooses the
-host. When it is not installed, the test creates the localhost secret the
-controller would create for a local platform, and the build runs in the
-cluster. No Git credentials are created. When
+output. The remote run requests `linux/arm64`. The matrix run requests `linux/amd64`
+and `linux/arm64`, and the published archive contains `linux-amd64/hello.txt`
+and `linux-arm64/hello.txt`. When the multi-platform controller is ready, that
+controller creates the SSH secret and chooses the host. When it is not
+installed, the test creates the localhost secret the controller would create
+for a local platform, and the build runs in the cluster. The suite also
+creates an integration test scenario that runs the Conforma policy in
+[policy](policy/) against the Chains attestation of a build. One build
+overrides task resource requests and limits and must pass. A build that
+changes the pack artifact type must fail. A build whose `SOURCE_ARTIFACT` is
+a trusted artifact from another run, rather than this run's checkout or a
+previous build task, must fail. No Git
+credentials are created. When
 `kind-registry/internal-registry-client-auth` exists, the test copies it to
 `byob-registry-auth` and attaches it to `byob-build` so Trusted Artifacts can
 push. Set `BYOB_SYSTEM_KEEP=1` to leave the suite-created namespace after the run.
@@ -216,22 +224,30 @@ was reviewed under these rules.
 
 ### Conforma policy assumptions
 
+[policy](policy/) checks the Chains provenance of a snapshot image. It
+rejects a build whose recorded tasks, revision, builder, or artifact chain
+drop the controls below. A build input must be the checkout source artifact
+or a `BUILD_ARTIFACT` produced by `run-build` or `run-build-remote` in that
+same attestation. Resource requests and limits may be overridden.
+[examples/integration](examples/integration/) runs that policy from a Konflux
+integration test scenario.
+
 Use the cluster's admission integration to evaluate policy before Task Pods
 start. It must allow only approved, immutable Task bundle references and
 platform-approved build literals, including the source revision, developer
 image, build command, build arguments, and output settings. Reject inline Tasks
-(`pipelineSpec.tasks[].taskSpec`) and runtime execution overrides such as
-`taskRunSpecs`, Pod or step overrides, and caller-selected service accounts.
+(`pipelineSpec.tasks[].taskSpec`) and runtime execution overrides that replace
+a step or add a pod template. Resource requests and limits may be set in
+`taskRunSpecs`.
 For private checkout, allow only approved Git repository URLs and Secret
 references bound to `git-auth`. This is where the platform prevents a
 PipelineRun from changing the reviewed execution plan or exposing credentials
 to Tasks other than checkout.
 
-Before release, evaluate the signed Chains provenance and Source VSA against the
-same policy. Require the provenance to identify the expected final artifact
-digest, source commit, Pipeline and Tasks, builder images, and all chained or
-matrix artifact relationships. Require the Source VSA to match that source
-commit. A successful PipelineRun alone is not evidence that these checks passed.
+The integration scenario evaluates that signed Chains provenance. A Source
+VSA is still a separate SCM control. Require it to match the source commit in
+the provenance. A successful PipelineRun alone is not evidence that these
+checks passed.
 
 See [examples/platform](examples/platform/) for the service-account example and
 [examples/pac](examples/pac/) for a PaC PipelineRun.

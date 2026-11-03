@@ -228,6 +228,7 @@ func prepareNamespace(caPEM string) {
 		"-f", filepath.Join(root, "pipelines/byob.yaml"),
 		"-f", filepath.Join(root, "pipelines/byob-chained.yaml"),
 		"-f", filepath.Join(root, "pipelines/byob-remote.yaml"),
+		"-f", filepath.Join(root, "pipelines/byob-matrix.yaml"),
 	)
 	installRegistryAuth()
 }

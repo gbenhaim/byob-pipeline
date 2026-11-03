@@ -1,0 +1,23 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Application
+metadata:
+  name: byob-slsa
+spec:
+  displayName: BYOB SLSA policy
+---
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  name: byob-pipeline-policy
+spec:
+  application: byob-slsa
+  resolverRef:
+    resolver: cluster
+    resourceKind: pipeline
+    params:
+    - name: kind
+      value: pipeline
+    - name: name
+      value: byob-pipeline-policy
+    - name: namespace
+      value: __NAMESPACE__

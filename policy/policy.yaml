@@ -1,0 +1,16 @@
+# Conforma policy for the BYOB pipelines.
+#
+# ec validate input reads an AttestationList. Each item is the in-toto
+# statement Chains stored for a snapshot image. The rules accept a statement
+# for byob, byob-chained, byob-remote, or byob-matrix when the recorded tasks,
+# source, builder, and artifact chain still support a SLSA Build L3 deployment
+# and a SLSA Source L4 revision. Resource requests and limits are not checked.
+name: byob-slsa
+description: SLSA Build L3 and Source L4 controls for the BYOB pipelines.
+sources:
+  - name: byob-slsa
+    policy:
+      - file:///policy/rules
+    config:
+      include:
+        - "@byob"

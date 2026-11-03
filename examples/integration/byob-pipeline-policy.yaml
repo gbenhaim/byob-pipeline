@@ -1,0 +1,125 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: byob-pipeline-policy
+spec:
+  description: |
+    Run the BYOB Conforma policy against the Chains provenance of the
+    snapshot image. The integration service injects SNAPSHOT. Resource
+    requests and limits are not part of this check.
+  params:
+  - name: SNAPSHOT
+    type: string
+    description: Snapshot spec supplied by the integration service.
+  tasks:
+  - name: validate
+    taskSpec:
+      steps:
+      - name: validate
+        image: quay.io/conforma/cli@sha256:a0cb6fcce80c6d0775e72802e4da58f050ca32ba32e1ea068d314df4a9536837
+        workingDir: /tmp
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eu
+          images=$$(printf '%s' "$$SNAPSHOT" | jq -r '.components[].containerImage')
+          test -n "$$images"
+          test -f /certs/ca-bundle.crt
+          rm -rf /tmp/statements
+          mkdir -p /tmp/statements
+          n=0
+          for image in $$images; do
+            n=$$((n + 1))
+            case "$$image" in
+              *@sha256:*)
+                repo=$${image%@sha256:*}
+                digest=sha256:$${image##*@sha256:}
+                tag=""
+                ;;
+              *)
+                repo=$${image%:*}
+                tag=$${image##*:}
+                digest=""
+                ;;
+            esac
+            host=$${repo%%/*}
+            path=$${repo#*/}
+            userpass=""
+            if [ -f /auth/.dockerconfigjson ]; then
+              basic=$$(jq -r --arg h "$$host" '.auths[$$h].auth // empty' /auth/.dockerconfigjson)
+              if [ -n "$$basic" ]; then
+                userpass=$$(printf '%s' "$$basic" | base64 -d)
+              fi
+            fi
+            fetch() {
+              if [ -n "$$userpass" ]; then
+                curl -fsS --cacert /certs/ca-bundle.crt --user "$$userpass" "$$@"
+              else
+                curl -fsS --cacert /certs/ca-bundle.crt "$$@"
+              fi
+            }
+            if [ -z "$$digest" ]; then
+              digest=$$(fetch -D - -o /dev/null \
+                -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+                "https://$${host}/v2/$${path}/manifests/$${tag}" \
+                | awk 'tolower($$1)=="docker-content-digest:" {gsub("\r","",$$2); print $$2}')
+            fi
+            test -n "$$digest"
+            att=sha256-$${digest#sha256:}.att
+            fetch \
+              -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://$${host}/v2/$${path}/manifests/$${att}" -o /tmp/manifest.json
+            blob=$$(jq -r '.layers[] | select(.mediaType=="application/vnd.dsse.envelope.v1+json") | .digest' /tmp/manifest.json | head -n 1)
+            test -n "$$blob"
+            fetch "https://$${host}/v2/$${path}/blobs/$${blob}" -o /tmp/envelope.json
+            jq -r '.payload' /tmp/envelope.json | base64 -d > "/tmp/statements/$${n}.json"
+          done
+          jq -s '{kind: "AttestationList", items: .}' /tmp/statements/*.json > /tmp/input.json
+          ec validate input /tmp/input.json --policy /policy/policy.yaml
+        env:
+        - name: HOME
+          value: /tmp
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: policy
+          mountPath: /policy
+          readOnly: true
+        - name: certs
+          mountPath: /certs
+          readOnly: true
+        - name: registry-auth
+          mountPath: /auth
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: policy
+        configMap:
+          name: byob-pipeline-policy
+          items:
+          - key: policy.yaml
+            path: policy.yaml
+          - key: pipeline.rego
+            path: rules/pipeline.rego
+      - name: certs
+        configMap:
+          name: trusted-ca
+          items:
+          - key: ca-bundle.crt
+            path: ca-bundle.crt
+      - name: registry-auth
+        secret:
+          secretName: byob-registry-auth
+          optional: true
+          defaultMode: 0444
+      - name: tmp
+        emptyDir: {}
