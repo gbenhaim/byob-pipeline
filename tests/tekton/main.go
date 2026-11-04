@@ -8,6 +8,7 @@ import (
 
 	"github.com/tektoncd/pipeline/pkg/apis/config"
 	v1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	"github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -76,9 +77,26 @@ func validateResource(ctx context.Context, path string) error {
 		return validatePipeline(ctx, data)
 	case "PipelineRun":
 		return validatePipelineRun(ctx, data)
+	case "StepAction":
+		return validateStepAction(ctx, data)
 	default:
 		return fmt.Errorf("unsupported kind %q", header.Kind)
 	}
+}
+
+// validateStepAction strictly decodes and validates one Tekton StepAction.
+func validateStepAction(ctx context.Context, data []byte) error {
+	var action v1beta1.StepAction
+	if err := yaml.UnmarshalStrict(data, &action); err != nil {
+		return err
+	}
+
+	action.SetDefaults(ctx)
+	if err := action.Validate(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // validateTask strictly decodes and validates one Tekton Task.

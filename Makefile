@@ -26,7 +26,7 @@ lint:
 	go -C tests/system vet ./...
 
 validate:
-	cd tests/tekton && go run . ../../task/*/0.1/*.yaml ../../pipelines/*.yaml ../../examples/integration/byob-pipeline-policy.yaml ../../examples/pipelineruns/*.yaml ../../examples/pac/*.yaml
+	cd tests/tekton && go run . ../../task/*/0.1/*.yaml ../../stepactions/*/*/*.yaml ../../pipelines/*.yaml ../../examples/integration/byob-pipeline-policy.yaml ../../examples/pipelineruns/*.yaml ../../examples/pac/*.yaml
 
 check: check-generated test lint validate
 

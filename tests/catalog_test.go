@@ -145,6 +145,51 @@ type pipelineTask struct {
 	} `yaml:"matrix"`
 }
 
+type stepAction struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name        string            `yaml:"name"`
+		Labels      map[string]string `yaml:"labels"`
+		Annotations map[string]string `yaml:"annotations"`
+	} `yaml:"metadata"`
+	Spec struct {
+		Description     string   `yaml:"description"`
+		Image           string   `yaml:"image"`
+		Command         []string `yaml:"command"`
+		Args            []string `yaml:"args"`
+		Script          string   `yaml:"script"`
+		Params          []param  `yaml:"params"`
+		Env             []envVar `yaml:"env"`
+		VolumeMounts    []mount  `yaml:"volumeMounts"`
+		SecurityContext struct {
+			RunAsUser                *int64 `yaml:"runAsUser"`
+			RunAsGroup               *int64 `yaml:"runAsGroup"`
+			RunAsNonRoot             bool   `yaml:"runAsNonRoot"`
+			AllowPrivilegeEscalation *bool  `yaml:"allowPrivilegeEscalation"`
+			Capabilities             struct {
+				Drop []string `yaml:"drop"`
+				Add  []string `yaml:"add"`
+			} `yaml:"capabilities"`
+			SeccompProfile struct {
+				Type string `yaml:"type"`
+			} `yaml:"seccompProfile"`
+		} `yaml:"securityContext"`
+	} `yaml:"spec"`
+}
+
+// readStepAction loads a StepAction relative to the repository root.
+func readStepAction(path string) stepAction {
+	GinkgoHelper()
+	data, err := os.ReadFile(filepath.Join("..", path))
+	Expect(err).NotTo(HaveOccurred())
+
+	var action stepAction
+	Expect(yaml.Unmarshal(data, &action)).To(Succeed())
+
+	return action
+}
+
 // readResource loads a catalog resource relative to the repository root.
 func readResource(path string) resource {
 	GinkgoHelper()
@@ -756,6 +801,50 @@ var _ = Describe("BYOB catalog", func() {
 			Expect(developerStep.WorkingDir).To(Equal("/var/source"))
 			Expect(hasMount(developerStep.VolumeMounts, "build-tools")).To(BeFalse())
 		}
+	})
+
+	It("unpacks a build-output manifest through the CLI image", func() {
+		action := readStepAction("stepactions/unpack-build-output/0.1/unpack-build-output.yaml")
+		Expect(action.APIVersion).To(Equal("tekton.dev/v1beta1"))
+		Expect(action.Kind).To(Equal("StepAction"))
+		Expect(action.Metadata.Name).To(Equal("unpack-build-output"))
+		Expect(action.Metadata.Labels["app.kubernetes.io/version"]).To(Equal("0.1.0"))
+		Expect(action.Metadata.Annotations["tekton.dev/pipelines.minVersion"]).To(Equal("1.16.0"))
+		Expect(action.Spec.Description).To(ContainSubstring("registry/repo@sha256:<manifest-digest>"))
+		Expect(action.Spec.Image).To(Equal(findStep(taskSpec("pack"), "publish").Image))
+		Expect(action.Spec.Command).To(Equal([]string{"/usr/local/bin/byob"}))
+		Expect(action.Spec.Args).To(Equal([]string{
+			"unpack",
+			"--image=$(params.image)",
+			"--destination=$(params.destination)",
+			"--artifact-type=$(params.artifactType)",
+			"--auth-dir=/var/run/byob-registry-auth",
+		}))
+		Expect(action.Spec.Script).To(BeEmpty())
+		Expect(action.Spec.VolumeMounts).To(BeEmpty())
+
+		for _, name := range []string{"image", "destination", "artifactType"} {
+			Expect(findParam(action.Spec.Params, name).Type).To(Equal("string"))
+		}
+		Expect(findParam(action.Spec.Params, "image").Default).To(BeNil())
+		Expect(findParam(action.Spec.Params, "destination").Default).To(BeNil())
+		Expect(findParam(action.Spec.Params, "artifactType").Default).To(Equal("application/vnd.konflux.build-output.v1"))
+		Expect(action.Spec.Env).To(Equal([]envVar{
+			{Name: "AUTHFILE", Value: "/var/run/byob-registry-auth/config.json"},
+			{Name: "CA_FILE", Value: "/etc/pki/tls/certs/ca-custom-bundle.crt"},
+		}))
+
+		security := action.Spec.SecurityContext
+		Expect(security.RunAsUser).NotTo(BeNil())
+		Expect(*security.RunAsUser).To(Equal(int64(1000)))
+		Expect(security.RunAsGroup).NotTo(BeNil())
+		Expect(*security.RunAsGroup).To(Equal(int64(0)))
+		Expect(security.RunAsNonRoot).To(BeTrue())
+		Expect(security.AllowPrivilegeEscalation).NotTo(BeNil())
+		Expect(*security.AllowPrivilegeEscalation).To(BeFalse())
+		Expect(security.Capabilities.Drop).To(Equal([]string{"ALL"}))
+		Expect(security.Capabilities.Add).To(BeEmpty())
+		Expect(security.SeccompProfile.Type).To(Equal("RuntimeDefault"))
 	})
 })
 

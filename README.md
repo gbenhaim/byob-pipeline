@@ -45,6 +45,54 @@ use each artifact's platform marker as its directory. A
 under `task/`. The default OCI artifact type is
 `application/vnd.konflux.build-output.v1`.
 
+## Unpack
+
+`pack` publishes one OCI artifact per PipelineRun. The Snapshot records that
+artifact's manifest digest. The artifact type is
+`application/vnd.konflux.build-output.v1`, and the only layer is
+`payload.tar.gz` (`application/vnd.oci.image.layer.v1.tar+gzip`). A flat
+archive extracts as files in the destination directory. An archive built from
+several platforms or tasks keeps its directories, such as `linux-amd64/` or
+`build/`.
+
+A release Task restores the artifact with the `unpack-build-output` StepAction.
+The image reference is the manifest digest, `registry/repo@sha256:<digest>`.
+`artifactType` defaults to `application/vnd.konflux.build-output.v1`. The step
+requires that artifact type, the layer name `payload.tar.gz`, and the layer
+media type `application/vnd.oci.image.layer.v1.tar+gzip`.
+
+```yaml
+steps:
+- name: unpack
+  ref:
+    name: unpack-build-output
+  params:
+  - name: image
+    value: registry.example/org/component@sha256:DIGEST
+  - name: destination
+    value: /var/workdir/output
+  volumeMounts:
+  - name: output
+    mountPath: /var/workdir/output
+  - name: registry-auth
+    mountPath: /var/run/byob-registry-auth
+    readOnly: true
+  - name: trusted-ca
+    mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+    subPath: ca-bundle.crt
+    readOnly: true
+```
+
+The destination is an empty directory writable by UID 1000. The StepAction runs
+as that user, with privilege escalation disabled and all Linux capabilities
+dropped. The Task supplies the volume mounts: the destination, plus
+`registry-auth` (`config.json`) and `trusted-ca` (`ca-bundle.crt`) when the
+registry needs them. Install
+[unpack-build-output.yaml](stepactions/unpack-build-output/0.1/unpack-build-output.yaml)
+in the Task namespace, or resolve that file with a StepAction resolver. A
+Pipeline references a Task, so a release Pipeline keeps its own Task and uses
+the unpacked files.
+
 ## Try it
 
 Requires Tekton Pipelines 1.16+, beta API fields enabled for matrix and
@@ -55,11 +103,13 @@ controller mappings for the requested platforms. Configure remote Podman with
 must be pullable without forwarded registry credentials. The controller must
 clean up VMs after completion or cancellation.
 
-The Tasks use `localhost/byob-cli:devel` for development. Build it with
-`make image`, push it to a registry reachable by the cluster, replace its
-reference in `task/run-build/0.1/run-build.yaml` and
-`task/pack/0.1/pack.yaml` with the published digest, then run `make generate`
-to refresh the generated remote Task.
+The Tasks and the unpack StepAction use `localhost/byob-cli:devel` for
+development. Build it with `make image`, push it to a registry reachable by
+the cluster, replace its reference in `task/run-build/0.1/run-build.yaml`,
+`task/pack/0.1/pack.yaml`, and
+`stepactions/unpack-build-output/0.1/unpack-build-output.yaml` with the
+published digest, then run `make generate` to refresh the generated remote
+Task.
 
 Choose an existing test namespace and install the example service accounts,
 Tasks, and Pipelines:
@@ -114,7 +164,7 @@ files.
 `make check` does not use a cluster. It needs Go 1.27 and ShellCheck. It runs
 the Go tests, `gofmt`, `go vet`, ShellCheck, a check that the generated remote
 Task matches its source, and Tekton admission validation of the Tasks,
-Pipelines, PipelineRun examples, and the policy Pipeline.
+StepAction, Pipelines, PipelineRun examples, and the policy Pipeline.
 
 ### System tests
 

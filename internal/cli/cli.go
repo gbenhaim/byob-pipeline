@@ -33,7 +33,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	root.SetErr(stderr)
 	root.AddCommand(
 		newPrepareCommand(), newStageOutputCommand(),
-		newRestoreInputsCommand(), newPackCommand(), newPublishCommand(),
+		newRestoreInputsCommand(), newPackCommand(), newPublishCommand(), newUnpackCommand(),
 		newSelectPlatformCommand(), newRecordImageCommand(),
 		newCheckCommandCommand(), newRemoteBuildCommand(),
 	)

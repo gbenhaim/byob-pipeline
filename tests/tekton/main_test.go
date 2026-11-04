@@ -21,6 +21,10 @@ func TestValidResourcesReturnNoValidationError(t *testing.T) {
 			name: "pipeline run",
 			path: "../../examples/pipelineruns/byob.yaml",
 		},
+		{
+			name: "step action",
+			path: "../../stepactions/unpack-build-output/0.1/unpack-build-output.yaml",
+		},
 	}
 
 	for _, test := range tests {
