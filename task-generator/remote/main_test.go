@@ -33,7 +33,7 @@ func fixture() map[string]any {
 				},
 				map[string]any{
 					"name": "validate-output", "command": []any{"/usr/local/bin/byob"},
-					"args": []any{"stage-output", "--source=/var/source", "--output=/var/build-output"},
+					"args": []any{"stage-output", "--build-output=/var/byob/output", "--output=/var/build-output"},
 				},
 			},
 		},
@@ -85,6 +85,7 @@ var _ = Describe("remote Task generator", func() {
 				"--ssh-dir=/ssh",
 				"--source=/var/source",
 				"--inputs=/var/workdir/inputs",
+				"--output=/var/byob/output",
 				"--control=/var/workdir/control",
 				"--image=$(params.image)",
 				"--command-file=/var/workdir/control/build-cmd",
@@ -127,7 +128,7 @@ var _ = Describe("remote Task generator", func() {
 		for _, item := range items(task["spec"].(map[string]any), "steps") {
 			step := item.(map[string]any)
 			if step["name"] == "validate-output" {
-				want := []any{"stage-output", "--source=/var/source", "--output=/var/build-output", "--platform=$(params.PLATFORM)"}
+				want := []any{"stage-output", "--build-output=/var/byob/output", "--output=/var/build-output", "--platform=$(params.PLATFORM)"}
 				Expect(step["args"]).To(Equal(want))
 				return
 			}

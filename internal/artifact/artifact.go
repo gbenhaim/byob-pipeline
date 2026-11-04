@@ -232,15 +232,10 @@ func removeUserinfo(value string) (string, bool) {
 	return parsed.String(), true
 }
 
-// StageOutput copies only validated out/ contents into the private export tree.
-// Platform metadata comes from the trusted caller, never the source tree.
-func StageOutput(source, destination, platform string) error {
-	if err := realDirectory(source); err != nil {
-		return err
-	}
-
-	output := filepath.Join(source, "out")
-	if err := checkOutput(output); err != nil {
+// StageOutput copies a validated build-output directory into the private export
+// tree as out/. Platform metadata comes from the trusted caller.
+func StageOutput(buildOutput, destination, platform string) error {
+	if err := checkOutput(buildOutput); err != nil {
 		return err
 	}
 
@@ -267,7 +262,7 @@ func StageOutput(source, destination, platform string) error {
 		return fmt.Errorf("export directory must be empty: %s", destination)
 	}
 
-	if err := copyTree(output, filepath.Join(destination, "out")); err != nil {
+	if err := copyTree(buildOutput, filepath.Join(destination, "out")); err != nil {
 		return err
 	}
 
@@ -278,10 +273,10 @@ func StageOutput(source, destination, platform string) error {
 	return nil
 }
 
-// Pack stages one flat output or platform-named outputs and writes a reproducible
+// Pack stages flat, platform, or task-named outputs and writes a reproducible
 // gzip-compressed tar archive. All inputs are validated before staging begins.
 func Pack(inputRoot, packageRoot, archivePath, layout string) error {
-	if layout != "flat" && layout != "platform" {
+	if layout != "flat" && layout != "platform" && layout != "named" {
 		return fmt.Errorf("unknown layout: %s", layout)
 	}
 
@@ -314,7 +309,7 @@ func selectPackageInputs(inputRoot, layout string) ([]packageSelection, error) {
 	}
 
 	if len(inputs) == 0 || (layout == "flat" && len(inputs) != 1) {
-		return nil, fmt.Errorf("flat layout requires one source; platform layout requires at least one")
+		return nil, fmt.Errorf("flat layout requires one source; platform and named layouts require at least one")
 	}
 
 	selected := make([]packageSelection, 0, len(inputs))
@@ -331,11 +326,14 @@ func selectPackageInputs(inputRoot, layout string) ([]packageSelection, error) {
 		}
 
 		name := ""
-		if layout == "platform" {
+		switch layout {
+		case "platform":
 			name, err = packagePlatformName(source, destinations)
-			if err != nil {
-				return nil, err
-			}
+		case "named":
+			name, err = packageTaskName(input.Name(), destinations)
+		}
+		if err != nil {
+			return nil, err
 		}
 
 		destinations[name] = true
@@ -371,7 +369,20 @@ func packagePlatformName(source string, destinations map[string]bool) (string, e
 	return name, nil
 }
 
-// stagePackage copies selected outputs into the requested flat or platform layout.
+// packageTaskName uses a restored task label as the archive directory.
+func packageTaskName(name string, destinations map[string]bool) (string, error) {
+	if !taskLabel.MatchString(name) {
+		return "", fmt.Errorf("invalid task label: %q", name)
+	}
+
+	if destinations[name] {
+		return "", fmt.Errorf("duplicate task label: %q", name)
+	}
+
+	return name, nil
+}
+
+// stagePackage copies selected outputs into the requested flat, platform, or named layout.
 func stagePackage(selected []packageSelection, packageRoot, layout string) error {
 	if err := os.RemoveAll(packageRoot); err != nil {
 		return err
@@ -381,7 +392,7 @@ func stagePackage(selected []packageSelection, packageRoot, layout string) error
 		return err
 	}
 
-	if layout == "platform" {
+	if layout == "platform" || layout == "named" {
 		if err := os.Mkdir(packageRoot, 0755); err != nil {
 			return err
 		}
@@ -408,6 +419,7 @@ func safeRelative(value string) error {
 var (
 	platformLabel       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./-]*$`)
 	platformPunctuation = regexp.MustCompile(`[^A-Za-z0-9]`)
+	taskLabel           = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 // checkPlatform validates labels before they become platform directory names.

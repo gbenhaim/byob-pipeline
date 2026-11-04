@@ -82,7 +82,7 @@ spec:
       value: $(params.oci-storage)
     - name: BUILD_ARTIFACTS
       value:
-      - $(tasks.codegen.results.BUILD_ARTIFACT)
+      - codegen=$(tasks.codegen.results.BUILD_ARTIFACT)
   - name: pack
     taskRef:
       name: pack
@@ -94,5 +94,3 @@ spec:
       value: $(params.output-image)
     - name: artifactType
       value: application/vnd.konflux.build-output.v1
-    - name: layout
-      value: flat

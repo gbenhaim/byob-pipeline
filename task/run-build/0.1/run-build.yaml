@@ -7,7 +7,7 @@ metadata:
   annotations:
     tekton.dev/pipelines.minVersion: 1.16.0
 spec:
-  description: Execute a build command in a non-root developer image and export only out/ as a Trusted Artifact.
+  description: Execute a build command in a non-root developer image and export only BUILD_OUTPUT as a Trusted Artifact.
   params:
   - name: image
     type: string
@@ -27,7 +27,7 @@ spec:
     description: Original checkout Trusted Artifact, restored independently for every build.
   - name: BUILD_ARTIFACTS
     type: array
-    description: Preceding build outputs, restored under BUILD_INPUTS/<index>/out/ in array order.
+    description: Preceding build outputs, restored under BUILD_INPUTS/<task>/out/. Name each entry task=reference.
     default: []
   - name: ociStorage
     type: string
@@ -39,7 +39,7 @@ spec:
   results:
   - name: BUILD_ARTIFACT
     type: string
-    description: Build outputs under out/, with optional platform metadata.
+    description: Build outputs from BUILD_OUTPUT, stored under out/, with optional platform metadata.
     value: $(steps.export.results.BUILD_ARTIFACT)
   stepTemplate:
     securityContext:
@@ -58,6 +58,8 @@ spec:
   - name: workdir
     emptyDir: {}
   - name: build-output
+    emptyDir: {}
+  - name: user-output
     emptyDir: {}
   - name: registry-auth
     secret:
@@ -85,7 +87,9 @@ spec:
     - |
       printf 'Giving uid 1000 ownership of /var/source\n' >&2
       /bin/chown 1000:0 /var/source
-      printf 'Prepared /var/source for the build user\n' >&2
+      printf 'Giving uid 1000 ownership of /var/byob/output\n' >&2
+      /bin/chown 1000:0 /var/byob/output
+      printf 'Prepared /var/source and /var/byob/output\n' >&2
     securityContext:
       runAsUser: 0
       runAsGroup: 0
@@ -99,6 +103,8 @@ spec:
     volumeMounts:
     - name: source
       mountPath: /var/source
+    - name: user-output
+      mountPath: /var/byob/output
   - name: prepare
     image: localhost/byob-cli:devel
     command:
@@ -143,11 +149,15 @@ spec:
       value: /var/workdir/home
     - name: BUILD_INPUTS
       value: /var/workdir/inputs
+    - name: BUILD_OUTPUT
+      value: /var/byob/output
     volumeMounts:
     - name: source
       mountPath: /var/source
     - name: workdir
       mountPath: /var/workdir
+    - name: user-output
+      mountPath: /var/byob/output
     computeResources:
       requests:
         cpu: '1'
@@ -157,8 +167,8 @@ spec:
   - name: validate-output
     image: localhost/byob-cli:devel
     volumeMounts:
-    - name: source
-      mountPath: /var/source
+    - name: user-output
+      mountPath: /var/byob/output
       readOnly: true
     - name: build-output
       mountPath: /var/build-output
@@ -166,7 +176,7 @@ spec:
     - /usr/local/bin/byob
     args:
     - stage-output
-    - --source=/var/source
+    - --build-output=/var/byob/output
     - --output=/var/build-output
   - name: export
     image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327

@@ -260,16 +260,17 @@ printf restored > "$destination/out/input.txt"
 
 	Describe("stage-output", func() {
 		It("logs the output directory it stages", func() {
-			source := GinkgoT().TempDir()
-			Expect(os.MkdirAll(filepath.Join(source, "out"), 0o755)).To(Succeed())
-			Expect(os.WriteFile(filepath.Join(source, "out", "hello.txt"), []byte("hello\n"), 0o644)).To(Succeed())
+			buildOutput := filepath.Join(GinkgoT().TempDir(), "build-output")
+			Expect(os.MkdirAll(buildOutput, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(buildOutput, "hello.txt"), []byte("hello\n"), 0o644)).To(Succeed())
 			output := filepath.Join(GinkgoT().TempDir(), "export")
 
-			stdout, stderr, err := runCLIStreams("stage-output", "--source="+source, "--output="+output)
+			stdout, stderr, err := runCLIStreams("stage-output", "--build-output="+buildOutput, "--output="+output)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(stdout).To(BeEmpty())
-			Expect(stderr).To(ContainSubstring("Staging build output from " + source + "/out into " + output))
+			Expect(stderr).To(ContainSubstring("Staging build output from " + buildOutput + " into " + output))
 			Expect(stderr).To(ContainSubstring("Staged build output into " + output))
+			Expect(string(mustReadFile(filepath.Join(output, "out", "hello.txt")))).To(Equal("hello\n"))
 		})
 	})
 

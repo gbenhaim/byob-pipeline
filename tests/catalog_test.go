@@ -480,9 +480,18 @@ var _ = Describe("BYOB catalog", func() {
 
 			for _, taskStep := range task.Steps {
 				if taskStep.Image == "$(params.image)" {
-					Expect(hasMount(append(task.StepTemplate.VolumeMounts, taskStep.VolumeMounts...), "build-output")).To(BeFalse(), "%s developer step can modify the private export volume", name)
+					mounts := append(task.StepTemplate.VolumeMounts, taskStep.VolumeMounts...)
+					Expect(hasMount(mounts, "build-output")).To(BeFalse(), "%s developer step can modify the private export volume", name)
+					Expect(hasMount(mounts, "user-output")).To(BeTrue(), "%s developer step must receive BUILD_OUTPUT", name)
+					Expect(envValue(taskStep, "BUILD_OUTPUT")).To(Equal("/var/byob/output"))
 				}
 			}
+
+			validate := findStep(task, "validate-output")
+			Expect(validate.Args).To(ContainElement("--build-output=/var/byob/output"))
+			Expect(slices.ContainsFunc(validate.VolumeMounts, func(mounted mount) bool {
+				return mounted.Name == "user-output" && mounted.MountPath == "/var/byob/output" && mounted.ReadOnly
+			})).To(BeTrue(), "%s validation must read BUILD_OUTPUT without letting the build change the export", name)
 		}
 	})
 
@@ -515,7 +524,6 @@ var _ = Describe("BYOB catalog", func() {
 					"--inputs=/var/workdir/inputs",
 					"--package=/var/workdir/package",
 					"--archive=/var/workdir/payload.tar.gz",
-					"--layout=$(params.layout)",
 					"--workdir=/var/workdir",
 					"--image=$(params.IMAGE)",
 					"--artifact-type=$(params.artifactType)",
@@ -539,7 +547,9 @@ var _ = Describe("BYOB catalog", func() {
 		Expect(build.Matrix.Params).To(Equal([]param{{Name: "PLATFORM", Value: []any{"linux/amd64", "linux/arm64"}}}))
 		pack := findTask(pipeline, "pack")
 		Expect(findParam(pack.Params, "BUILD_ARTIFACTS").Value).To(Equal([]any{"$(tasks.build.results.BUILD_ARTIFACT[*])"}))
-		Expect(findParam(pack.Params, "layout").Value).To(Equal("platform"))
+		for _, taskParam := range pack.Params {
+			Expect(taskParam.Name).NotTo(Equal("layout"))
+		}
 
 		names := []string{}
 		for _, pipelineParam := range pipeline.Params {
@@ -605,7 +615,7 @@ var _ = Describe("BYOB catalog", func() {
 		pipeline := readResource("pipelines/byob-chained.yaml").Spec
 		build := findTask(pipeline, "build")
 		Expect(findParam(build.Params, "SOURCE_ARTIFACT").Value).To(Equal("$(tasks.checkout.results.SOURCE_ARTIFACT)"))
-		Expect(findParam(build.Params, "BUILD_ARTIFACTS").Value).To(Equal([]any{"$(tasks.codegen.results.BUILD_ARTIFACT)"}))
+		Expect(findParam(build.Params, "BUILD_ARTIFACTS").Value).To(Equal([]any{"codegen=$(tasks.codegen.results.BUILD_ARTIFACT)"}))
 	})
 
 	It("uses pinned tasks and a literal matrix in the PaC example", func() {

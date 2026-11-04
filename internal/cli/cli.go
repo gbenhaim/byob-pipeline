@@ -111,15 +111,15 @@ func newPrepareCommand() *cobra.Command {
 
 // newStageOutputCommand copies validated build outputs to the trusted export tree.
 func newStageOutputCommand() *cobra.Command {
-	var source, output, platform string
+	var buildOutput, output, platform string
 	command := &cobra.Command{
 		Use:   "stage-output",
 		Short: "Stage validated build outputs for export",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			stderr := command.ErrOrStderr()
-			report(stderr, "Staging build output from %s/out into %s", source, output)
-			if err := artifact.StageOutput(source, output, platform); err != nil {
+			report(stderr, "Staging build output from %s into %s", buildOutput, output)
+			if err := artifact.StageOutput(buildOutput, output, platform); err != nil {
 				return err
 			}
 
@@ -133,7 +133,7 @@ func newStageOutputCommand() *cobra.Command {
 		},
 	}
 
-	command.Flags().StringVar(&source, "source", "/var/source", "build source directory")
+	command.Flags().StringVar(&buildOutput, "build-output", "/var/byob/output", "build output directory")
 	command.Flags().StringVar(&output, "output", "/var/build-output", "private output staging directory")
 	command.Flags().StringVar(&platform, "platform", "", "trusted platform metadata")
 	return command
@@ -145,7 +145,7 @@ func newRestoreInputsCommand() *cobra.Command {
 	var required bool
 	command := &cobra.Command{
 		Use:   "restore-inputs [flags] -- [ARTIFACT...]",
-		Short: "Restore artifact inputs into separate indexed directories",
+		Short: "Restore artifact inputs into separate directories",
 		RunE: func(command *cobra.Command, args []string) error {
 			return restoreInputs(command.Context(), root, args, required, command.OutOrStdout(), command.ErrOrStderr())
 		},
@@ -171,7 +171,7 @@ func newPackCommand() *cobra.Command {
 	command.Flags().StringVar(&inputs, "inputs", "/var/workdir/inputs", "indexed artifact directories")
 	command.Flags().StringVar(&output, "package", "/var/workdir/package", "staged deliverables directory")
 	command.Flags().StringVar(&archive, "archive", "/var/workdir/payload.tar.gz", "archive filename")
-	command.Flags().StringVar(&layout, "layout", "flat", "flat or platform")
+	command.Flags().StringVar(&layout, "layout", "flat", "flat, platform, or named")
 	return command
 }
 
@@ -208,7 +208,6 @@ func newPublishCommand() *cobra.Command {
 	command.Flags().StringVar(&opts.Inputs, "inputs", "", "indexed artifact directories to restore and pack")
 	command.Flags().StringVar(&opts.Package, "package", "", "staged deliverables directory")
 	command.Flags().StringVar(&opts.Archive, "archive", "", "archive filename")
-	command.Flags().StringVar(&opts.Layout, "layout", "flat", "flat or platform")
 	return command
 }
 
@@ -335,6 +334,7 @@ func newRemoteBuildCommand() *cobra.Command {
 	command.Flags().StringVar(&opts.SSHDir, "ssh-dir", "/ssh", "controller Secret directory")
 	command.Flags().StringVar(&opts.SourceRoot, "source", "/var/source", "source directory")
 	command.Flags().StringVar(&opts.InputRoot, "inputs", "/var/workdir/inputs", "indexed inputs directory")
+	command.Flags().StringVar(&opts.OutputRoot, "output", "/var/byob/output", "build output directory")
 	command.Flags().StringVar(&opts.ControlRoot, "control", "/var/workdir/control", "trusted control directory")
 	command.Flags().StringVar(&opts.BuilderImage, "image", "", "digest-pinned developer image")
 	command.Flags().StringVar(&commandFile, "command-file", "/var/workdir/control/build-cmd", "recorded build argv")

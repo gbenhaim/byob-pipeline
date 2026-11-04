@@ -86,17 +86,17 @@ func RecordImage(mode, image, controlRoot, resultPath string) error {
 }
 
 // BuildOptions identifies the controller credentials, source and indexed inputs,
-// and the immutable developer image and executable argv to run.
+// the build output directory, and the immutable developer image and executable argv.
 type BuildOptions struct {
-	SSHDir, SourceRoot, InputRoot, ControlRoot, BuilderImage string
-	BuildCmd                                                 []string
-	Stdout, Stderr                                           io.Writer
+	SSHDir, SourceRoot, InputRoot, OutputRoot, ControlRoot, BuilderImage string
+	BuildCmd                                                             []string
+	Stdout, Stderr                                                       io.Writer
 }
 
 // Build runs the developer container on the controller's VM and returns only its
-// out/ directory. The checkout and controller credentials stay separate from the
-// container. Context cancellation stops local transfers and attempts remote cleanup
-// using a fresh, bounded context before deleting the private key.
+// BUILD_OUTPUT directory. The checkout and controller credentials stay separate
+// from the container. Context cancellation stops local transfers and attempts
+// remote cleanup using a fresh, bounded context before deleting the private key.
 func Build(ctx context.Context, options BuildOptions) (result error) {
 	defer func() {
 		if result != nil && ctx.Err() != nil {
@@ -175,7 +175,7 @@ func Build(ctx context.Context, options BuildOptions) (result error) {
 		return err
 	}
 
-	if err := returnBuildOutput(ctx, session, options.SourceRoot, directory); err != nil {
+	if err := returnBuildOutput(ctx, session, options.OutputRoot, directory); err != nil {
 		return err
 	}
 
@@ -408,11 +408,14 @@ func runBuildCommand(
 	return image, nil
 }
 
-// returnBuildOutput stages the VM output on the source filesystem before replacing out/.
-func returnBuildOutput(ctx context.Context, session sshSession, sourceRoot, directory string) (result error) {
-	// Source and control are separate volumes in a Task. Stage on the source
-	// filesystem so the final output rename works across that volume boundary.
-	returned, err := os.MkdirTemp(sourceRoot, ".byob-returned-")
+// returnBuildOutput extracts the VM deliverables into the build output directory.
+// The temporary directory is on that same volume so the final rename stays local.
+func returnBuildOutput(ctx context.Context, session sshSession, outputRoot, directory string) (result error) {
+	if err := emptyRealDirectory(outputRoot); err != nil {
+		return err
+	}
+
+	returned, err := os.MkdirTemp(outputRoot, ".byob-returned-")
 	if err != nil {
 		return err
 	}
@@ -429,27 +432,43 @@ func returnBuildOutput(ctx context.Context, session sshSession, sourceRoot, dire
 		return fmt.Errorf("return build output: %w", err)
 	}
 
-	output := filepath.Join(returned, "out")
-	if err := validateReturnedOutput(output); err != nil {
-		return err
-	}
-
-	if err := os.RemoveAll(filepath.Join(sourceRoot, "out")); err != nil {
-		return err
-	}
-
-	return os.Rename(output, filepath.Join(sourceRoot, "out"))
+	return moveChildren(returned, outputRoot)
 }
 
-// validateReturnedOutput requires the VM transfer to contain a real out directory.
-func validateReturnedOutput(output string) error {
-	info, err := os.Lstat(output)
+// emptyRealDirectory requires a real, empty directory before deliverables arrive.
+func emptyRealDirectory(path string) error {
+	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
 
-	if !info.IsDir() {
-		return errors.New("out/ must be a real directory")
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("build output directory must be a real directory: %s", path)
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+
+	if len(entries) != 0 {
+		return fmt.Errorf("build output directory must be empty: %s", path)
+	}
+
+	return nil
+}
+
+// moveChildren renames every immediate child from source into destination.
+func moveChildren(source, destination string) error {
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if err := os.Rename(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+			return err
+		}
 	}
 
 	return nil

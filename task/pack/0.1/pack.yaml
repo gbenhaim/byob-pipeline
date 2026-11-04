@@ -11,7 +11,7 @@ spec:
   params:
   - name: BUILD_ARTIFACTS
     type: array
-    description: Build output Trusted Artifacts containing out/ and optional platform metadata.
+    description: Build output Trusted Artifacts. Label an entry task=reference to publish it under that task name.
   - name: IMAGE
     type: string
     description: Tagged destination for the component build artifact.
@@ -19,10 +19,6 @@ spec:
     type: string
     description: OCI artifactType for the documented output format.
     default: application/vnd.konflux.build-output.v1
-  - name: layout
-    type: string
-    description: 'Platform-owned output layout: flat or platform.'
-    default: flat
   results:
   - name: IMAGE_URL
     type: string
@@ -69,7 +65,6 @@ spec:
     - --inputs=/var/workdir/inputs
     - --package=/var/workdir/package
     - --archive=/var/workdir/payload.tar.gz
-    - --layout=$(params.layout)
     - --workdir=/var/workdir
     - --image=$(params.IMAGE)
     - --artifact-type=$(params.artifactType)

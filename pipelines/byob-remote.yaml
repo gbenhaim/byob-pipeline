@@ -78,5 +78,3 @@ spec:
       value: $(params.output-image)
     - name: artifactType
       value: application/vnd.konflux.build-output.v1
-    - name: layout
-      value: flat

@@ -15,10 +15,18 @@ import (
 )
 
 var artifactReference = regexp.MustCompile(`^oci:[^\s=]+@sha256:[a-f0-9]{64}$`)
+var artifactLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 var manifestDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
+type restoredArtifact struct {
+	name     string
+	ref      string
+	explicit bool
+}
+
 // restoreInputs validates OCI references and restores each artifact separately so
-// duplicate filenames cannot overwrite outputs from another build.
+// duplicate filenames cannot overwrite outputs from another build. A bare
+// reference uses its array index. A task-name label uses that name.
 func restoreInputs(ctx context.Context, root string, refs []string, required bool, stdout, stderr io.Writer) error {
 	if required && len(refs) == 0 {
 		return fmt.Errorf("at least one build artifact is required")
@@ -28,11 +36,16 @@ func restoreInputs(ctx context.Context, root string, refs []string, required boo
 		return fmt.Errorf("input root is required")
 	}
 
+	parsed, err := parseArtifactInputs(refs)
+	if err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return err
 	}
 
-	if len(refs) == 0 {
+	if len(parsed) == 0 {
 		report(stderr, "No build artifacts to restore into %s", root)
 		return nil
 	}
@@ -42,28 +55,69 @@ func restoreInputs(ctx context.Context, root string, refs []string, required boo
 		return err
 	}
 
-	report(stderr, "Restoring %d build artifact(s) into %s", len(refs), root)
-	for index, ref := range refs {
-		if !artifactReference.MatchString(ref) {
-			return fmt.Errorf("invalid build artifact reference %q", ref)
-		}
-
-		destination := filepath.Join(root, strconv.Itoa(index))
+	report(stderr, "Restoring %d build artifact(s) into %s", len(parsed), root)
+	for _, item := range parsed {
+		destination := filepath.Join(root, item.name)
 		if err := os.MkdirAll(destination, 0755); err != nil {
 			return err
 		}
 
-		report(stderr, "Restoring build artifact %d from %s", index, ref)
-		cmd := exec.CommandContext(ctx, "use-archive", ref+"="+destination)
+		report(stderr, "Restoring build artifact %s from %s", item.name, item.ref)
+		cmd := exec.CommandContext(ctx, "use-archive", item.ref+"="+destination)
 		cmd.Stdout, cmd.Stderr, cmd.Env = stdout, stderr, env
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("restore input %d: %w", index, err)
+			return fmt.Errorf("restore input %s: %w", item.name, err)
 		}
 
-		report(stderr, "Restored build artifact %d into %s", index, destination)
+		report(stderr, "Restored build artifact %s into %s", item.name, destination)
 	}
 
 	return nil
+}
+
+// parseArtifactInputs checks every reference before a restore begins.
+// Names are either all explicit or all array indexes.
+func parseArtifactInputs(refs []string) ([]restoredArtifact, error) {
+	parsed := make([]restoredArtifact, 0, len(refs))
+	explicit := 0
+	seen := map[string]bool{}
+	for index, ref := range refs {
+		item, err := parseArtifactInput(ref, index)
+		if err != nil {
+			return nil, err
+		}
+
+		if seen[item.name] {
+			return nil, fmt.Errorf("duplicate build artifact name %q", item.name)
+		}
+
+		seen[item.name] = true
+		if item.explicit {
+			explicit++
+		}
+
+		parsed = append(parsed, item)
+	}
+
+	if explicit != 0 && explicit != len(parsed) {
+		return nil, fmt.Errorf("build artifact names must be set on every input")
+	}
+
+	return parsed, nil
+}
+
+// parseArtifactInput splits one bare OCI reference or one name=reference input.
+func parseArtifactInput(value string, index int) (restoredArtifact, error) {
+	if artifactReference.MatchString(value) {
+		return restoredArtifact{name: strconv.Itoa(index), ref: value}, nil
+	}
+
+	name, ref, ok := strings.Cut(value, "=")
+	if !ok || !artifactLabel.MatchString(name) || !artifactReference.MatchString(ref) {
+		return restoredArtifact{}, fmt.Errorf("invalid build artifact reference %q", value)
+	}
+
+	return restoredArtifact{name: name, ref: ref, explicit: true}, nil
 }
 
 // restoreSource extracts one checkout artifact directly into the source directory.
@@ -99,7 +153,7 @@ func restoreSource(ctx context.Context, ref, destination string, stdout, stderr 
 
 type publishOptions struct {
 	Image, ArtifactType, Workdir, AuthDir, URLResult, DigestResult string
-	Inputs, Package, Archive, Layout                               string
+	Inputs, Package, Archive                                       string
 	Artifacts                                                      []string
 	PlainHTTP                                                      bool
 }
@@ -149,6 +203,11 @@ func stagePublication(ctx context.Context, opts *publishOptions, stdout, stderr 
 		return nil
 	}
 
+	layout, err := selectLayout(opts.Artifacts)
+	if err != nil {
+		return err
+	}
+
 	if err := restoreInputs(ctx, opts.Inputs, opts.Artifacts, true, stdout, stderr); err != nil {
 		return err
 	}
@@ -158,11 +217,6 @@ func stagePublication(ctx context.Context, opts *publishOptions, stdout, stderr 
 		archive = filepath.Join(opts.Workdir, "payload.tar.gz")
 	}
 
-	layout := opts.Layout
-	if layout == "" {
-		layout = "flat"
-	}
-
 	packageRoot := opts.Package
 	if packageRoot == "" {
 		packageRoot = filepath.Join(opts.Workdir, "package")
@@ -170,6 +224,37 @@ func stagePublication(ctx context.Context, opts *publishOptions, stdout, stderr 
 
 	opts.Archive = archive
 	return packArchive(opts.Inputs, packageRoot, archive, layout, stderr)
+}
+
+// selectLayout chooses the archive shape from the original artifact references.
+// One bare reference is flat, several bare references are platform-named, and
+// task labels select the named layout.
+func selectLayout(refs []string) (string, error) {
+	parsed, err := parseArtifactInputs(refs)
+	if err != nil {
+		return "", err
+	}
+
+	if len(parsed) == 0 {
+		return "", fmt.Errorf("at least one build artifact is required")
+	}
+
+	labeled := 0
+	for _, item := range parsed {
+		if item.explicit {
+			labeled++
+		}
+	}
+
+	if labeled == len(parsed) {
+		return "named", nil
+	}
+
+	if len(parsed) == 1 {
+		return "flat", nil
+	}
+
+	return "platform", nil
 }
 
 // validatePublishOptions requires the subject metadata and all result destinations.

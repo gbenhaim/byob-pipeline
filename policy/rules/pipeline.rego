@@ -184,6 +184,18 @@ source_input_ok contains id if {
 	found.value == value
 }
 
+# artifact_reference returns the OCI reference from a bare or task-labeled input.
+artifact_reference(entry) := entry if {
+	not contains(entry, "=")
+}
+
+artifact_reference(entry) := ref if {
+	parts := split(entry, "=")
+	count(parts) == 2
+	regex.match(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, parts[0])
+	ref := parts[1]
+}
+
 # build_input_ok names a build task whose extra inputs are build outputs.
 build_input_ok contains id if {
 	some item in build_tasks
@@ -193,7 +205,7 @@ build_input_ok contains id if {
 	every entry in values {
 		some found in build_results
 		found.run == item.run
-		found.value == entry
+		found.value == artifact_reference(entry)
 	}
 }
 
@@ -210,7 +222,7 @@ pack_ok contains run if {
 	every entry in values {
 		some found in build_results
 		found.run == run
-		found.value == entry
+		found.value == artifact_reference(entry)
 	}
 }
 
@@ -512,11 +524,11 @@ deny contains result if {
 
 # METADATA
 # title: Pack publishes the build outputs
-# description: Pack must publish the build artifacts as the attested image.
+# description: Pack must publish the build artifacts as the attested image. A named-layout entry may use a task=reference label.
 # custom:
 #   short_name: artifact_pack
 #   failure_msg: Pack did not publish the build outputs
-#   solution: Restore the pack artifact references, image, and artifact type
+#   solution: Pass BUILD_ARTIFACT results, using task=reference labels for the named layout
 #   collections:
 #   - byob
 deny contains result if {

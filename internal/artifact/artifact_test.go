@@ -189,19 +189,18 @@ var _ = Describe("Prepare", func() {
 
 var _ = Describe("StageOutput", func() {
 	It("exports only deliverables and preserves modes and links", func() {
-		source := sourceTree()
-		writeFile(filepath.Join(source, "out", "bin", "hello"), "deliverable", 0751)
-		Expect(os.Chmod(filepath.Join(source, "out", "bin"), 0750)).To(Succeed())
+		buildOutput := filepath.Join(GinkgoT().TempDir(), "build-output")
+		writeFile(filepath.Join(buildOutput, "bin", "hello"), "deliverable", 0751)
+		Expect(os.Chmod(filepath.Join(buildOutput, "bin"), 0750)).To(Succeed())
 
-		link("bin/hello", filepath.Join(source, "out", "link"))
-		link("missing", filepath.Join(source, "out", "dangling"))
-		writeFile(filepath.Join(source, "changed-source"), "must not be exported", 0644)
-		writeFile(filepath.Join(source, ".skip-trusted-artifacts"), "", 0644)
-		Expect(syscall.Mkfifo(filepath.Join(source, "build-cache-fifo"), 0600)).To(Succeed())
-		link("/outside", filepath.Join(source, "build-cache-link"))
+		link("bin/hello", filepath.Join(buildOutput, "link"))
+		link("missing", filepath.Join(buildOutput, "dangling"))
+		checkout := sourceTree()
+		writeFile(filepath.Join(checkout, "out", "hello.txt"), "must not be exported", 0644)
+		writeFile(filepath.Join(filepath.Dir(buildOutput), "changed-source"), "must not be exported", 0644)
 
 		destination := GinkgoT().TempDir()
-		Expect(StageOutput(source, destination, "")).To(Succeed())
+		Expect(StageOutput(buildOutput, destination, "")).To(Succeed())
 
 		entries, err := os.ReadDir(destination)
 		Expect(err).NotTo(HaveOccurred())
@@ -228,8 +227,8 @@ var _ = Describe("StageOutput", func() {
 
 	DescribeTable("rejects invalid output before copying",
 		func(kind string) {
-			source := sourceTree()
-			output := filepath.Join(source, "out")
+			parent := GinkgoT().TempDir()
+			output := filepath.Join(parent, "build-output")
 			if kind != "missing" {
 				Expect(os.Mkdir(output, 0755)).To(Succeed())
 			}
@@ -252,15 +251,12 @@ var _ = Describe("StageOutput", func() {
 			case "cycle":
 				link("link", filepath.Join(output, "link"))
 			case "output symlink":
-				Expect(os.Rename(output, filepath.Join(source, "other"))).To(Succeed())
+				Expect(os.Rename(output, filepath.Join(parent, "other"))).To(Succeed())
 				link("other", output)
-			case "source symlink":
-				link(source, source+"-link")
-				source += "-link"
 			}
 
 			destination := GinkgoT().TempDir()
-			Expect(StageOutput(source, destination, "")).To(HaveOccurred())
+			Expect(StageOutput(output, destination, "")).To(HaveOccurred())
 
 			entries, err := os.ReadDir(destination)
 			Expect(err).NotTo(HaveOccurred())
@@ -275,27 +271,26 @@ var _ = Describe("StageOutput", func() {
 		Entry("absolute symlink", "absolute"),
 		Entry("symlink cycle", "cycle"),
 		Entry("output symlink", "output symlink"),
-		Entry("source symlink", "source symlink"),
 	)
 
 	It("writes the trusted platform outside user output", func() {
-		source := sourceTree()
-		writeFile(filepath.Join(source, "out", "hello"), "deliverable", 0644)
-		writeFile(filepath.Join(source, ".konflux-platform"), "forged", 0644)
+		buildOutput := filepath.Join(GinkgoT().TempDir(), "build-output")
+		writeFile(filepath.Join(buildOutput, "hello"), "deliverable", 0644)
+		writeFile(filepath.Join(buildOutput, ".konflux-platform"), "forged", 0644)
 		destination := GinkgoT().TempDir()
 
-		Expect(StageOutput(source, destination, "linux/arm64")).To(Succeed())
+		Expect(StageOutput(buildOutput, destination, "linux/arm64")).To(Succeed())
 		Expect(string(readFile(filepath.Join(destination, ".konflux-platform")))).To(Equal("linux/arm64\n"))
-		Expect(string(readFile(filepath.Join(source, ".konflux-platform")))).To(Equal("forged"))
+		Expect(string(readFile(filepath.Join(destination, "out", ".konflux-platform")))).To(Equal("forged"))
 	})
 
 	DescribeTable("rejects invalid platform labels before staging",
 		func(platform string) {
-			source := sourceTree()
-			writeFile(filepath.Join(source, "out", "hello"), "hello", 0644)
+			buildOutput := filepath.Join(GinkgoT().TempDir(), "build-output")
+			writeFile(filepath.Join(buildOutput, "hello"), "hello", 0644)
 			destination := GinkgoT().TempDir()
 
-			Expect(StageOutput(source, destination, platform)).To(HaveOccurred())
+			Expect(StageOutput(buildOutput, destination, platform)).To(HaveOccurred())
 
 			entries, err := os.ReadDir(destination)
 			Expect(err).NotTo(HaveOccurred())
@@ -312,6 +307,36 @@ var _ = Describe("StageOutput", func() {
 })
 
 var _ = Describe("Pack", func() {
+	It("uses task labels as archive directories", func() {
+		root := GinkgoT().TempDir()
+		inputTree(root, "second", "forged", "two")
+		inputTree(root, "first", "linux/amd64", "one")
+		Expect(pack(root, "named")).To(Succeed())
+
+		entries := archiveEntries(filepath.Join(root, "payload.tar.gz"))
+		var names []string
+		contents := map[string]string{}
+		for _, entry := range entries {
+			names = append(names, strings.TrimSuffix(entry.header.Name, "/"))
+			contents[entry.header.Name] = entry.data
+		}
+
+		Expect(names).To(Equal([]string{"first", "first/hello", "second", "second/hello"}))
+		Expect(contents["first/hello"]).To(Equal("one"))
+		Expect(contents["second/hello"]).To(Equal("two"))
+	})
+
+	It("rejects a named directory that is not a task label", func() {
+		root := GinkgoT().TempDir()
+		inputTree(root, "First", "", "one")
+
+		err := pack(root, "named")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("task label"))
+		_, statErr := os.Lstat(filepath.Join(root, "payload.tar.gz"))
+		Expect(os.IsNotExist(statErr)).To(BeTrue(), "archive exists after an invalid task label: %v", statErr)
+	})
+
 	It("maps platforms without assuming input order", func() {
 		root := GinkgoT().TempDir()
 		inputTree(root, "0", "linux/arm64", "arm")

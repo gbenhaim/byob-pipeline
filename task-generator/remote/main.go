@@ -150,6 +150,7 @@ func remoteBuildStep(trustedImage any) map[string]any {
 			"--ssh-dir=/ssh",
 			"--source=/var/source",
 			"--inputs=/var/workdir/inputs",
+			"--output=/var/byob/output",
 			"--control=/var/workdir/control",
 			"--image=$(params.image)",
 			"--command-file=/var/workdir/control/build-cmd",
@@ -161,6 +162,7 @@ func remoteBuildStep(trustedImage any) map[string]any {
 			sshMount,
 			mount("source", "/var/source"),
 			mount("workdir", "/var/workdir"),
+			mount("user-output", "/var/byob/output"),
 		},
 	}
 }

@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -165,15 +164,16 @@ var _ = Describe("remote builds", func() {
 			f.options.Stdout, f.options.Stderr = &stdout, &stderr
 
 			Expect(Build(context.Background(), f.options)).To(Succeed(), stderr.String())
-			assertFile(t, filepath.Join(f.options.SourceRoot, "out", "output.txt"), "expected output")
-			assertFile(t, filepath.Join(f.options.SourceRoot, "out", "first.txt"), "first build output")
-			assertFile(t, filepath.Join(f.options.SourceRoot, "out", "second.txt"), "second build output")
+			assertFile(t, filepath.Join(f.options.OutputRoot, "output.txt"), "expected output")
+			assertFile(t, filepath.Join(f.options.OutputRoot, "first.txt"), "first build output")
+			assertFile(t, filepath.Join(f.options.OutputRoot, "second.txt"), "second build output")
 			assertFile(t, filepath.Join(f.options.SourceRoot, "private-source.txt"), "must not change")
+			assertFile(t, filepath.Join(f.options.SourceRoot, "out", "stale.txt"), "previous output")
 			assertFile(t, filepath.Join(f.options.ControlRoot, "builder-image"), observedImage)
-			assertMissing(t, filepath.Join(f.options.SourceRoot, "out", "stale.txt"))
+			assertMissing(t, filepath.Join(f.options.OutputRoot, "stale.txt"))
 			assertMissing(t, filepath.Join(f.options.SourceRoot, "remote-only.txt"))
 			for name, want := range map[string]string{"same-link": "./output.txt", "sub/parent-link": "../output.txt"} {
-				got, err := os.Readlink(filepath.Join(f.options.SourceRoot, "out", name))
+				got, err := os.Readlink(filepath.Join(f.options.OutputRoot, name))
 				Expect(err).NotTo(HaveOccurred())
 				Expect(got).To(Equal(want))
 			}
@@ -231,7 +231,7 @@ var _ = Describe("remote builds", func() {
 			Expect(transferred.Name).To(Equal("var/source/.git/config"))
 		})
 
-		It("returns output across separate control and source filesystems", func() {
+		It("returns output onto a separate build-output filesystem", func() {
 			t := GinkgoT()
 			f := newBuildFixture(t)
 			var controlStat, alternateStat syscall.Stat_t
@@ -240,15 +240,14 @@ var _ = Describe("remote builds", func() {
 				Skip("a separate /dev/shm filesystem is unavailable")
 			}
 
-			source, err := os.MkdirTemp("/dev/shm", "byob-source-test-")
+			outputRoot, err := os.MkdirTemp("/dev/shm", "byob-output-test-")
 			Expect(err).NotTo(HaveOccurred())
-			DeferCleanup(func() { _ = os.RemoveAll(source) })
-			output, err := exec.Command("cp", "-a", f.options.SourceRoot+"/.", source).CombinedOutput()
-			Expect(err).NotTo(HaveOccurred(), string(output))
-			f.options.SourceRoot = source
+			DeferCleanup(func() { _ = os.RemoveAll(outputRoot) })
+			f.options.OutputRoot = outputRoot
 
 			Expect(Build(context.Background(), f.options)).To(Succeed())
-			assertFile(t, filepath.Join(source, "out", "output.txt"), "expected output")
+			assertFile(t, filepath.Join(outputRoot, "output.txt"), "expected output")
+			assertFile(t, filepath.Join(f.options.SourceRoot, "private-source.txt"), "must not change")
 			f.assertCleaned(t, true)
 		})
 
@@ -315,6 +314,16 @@ var _ = Describe("remote builds", func() {
 			Expect(input.Uid).To(Equal(1000))
 			Expect(input.Gid).To(Equal(0))
 			Expect(input.Mode).To(Equal(int64(0o600)))
+
+			parent := findArchiveHeader(t, f.root, "var/byob/")
+			Expect(parent.Typeflag).To(Equal(byte(tar.TypeDir)))
+			Expect(parent.Mode).To(Equal(int64(0o755)))
+			Expect(parent.Uid).To(Equal(0))
+			output := findArchiveHeader(t, f.root, "var/byob/output/")
+			Expect(output.Typeflag).To(Equal(byte(tar.TypeDir)))
+			Expect(output.Mode).To(Equal(int64(0o775)))
+			Expect(output.Uid).To(Equal(1000))
+			Expect(output.Gid).To(Equal(0))
 			assertFile(t, filepath.Join(f.root, "home-before-start"), "")
 			entries, err := os.ReadDir(filepath.Join(f.root, "received", "var", "workdir", "home"))
 			Expect(err).NotTo(HaveOccurred())
@@ -486,10 +495,11 @@ func newBuildFixture(t GinkgoTInterface) buildFixture {
 	root := t.TempDir()
 	f := buildFixture{root: root, options: BuildOptions{
 		SSHDir: filepath.Join(root, "ssh"), SourceRoot: filepath.Join(root, "source with space"),
-		InputRoot: filepath.Join(root, "inputs"), ControlRoot: filepath.Join(root, "control"),
+		InputRoot: filepath.Join(root, "inputs"), OutputRoot: filepath.Join(root, "build-output"),
+		ControlRoot:  filepath.Join(root, "control"),
 		BuilderImage: requestedImage, BuildCmd: []string{"./build.sh"}, Stdout: io.Discard, Stderr: io.Discard,
 	}}
-	for _, name := range []string{"ssh", "source with space", "inputs", "remote", "private", "bin"} {
+	for _, name := range []string{"ssh", "source with space", "inputs", "build-output", "remote", "private", "bin"} {
 		Expect(os.MkdirAll(filepath.Join(root, name), 0o755)).To(Succeed())
 	}
 
@@ -690,15 +700,16 @@ case "$1" in
    if [[ $FIXTURE_MODE == start-failure ]]; then exit 42; fi
    if [[ $FIXTURE_MODE == wait ]]; then touch "$FIXTURE_ROOT/started"; sleep 60; fi
    source=$FIXTURE_ROOT/received/var/source
+   output=$FIXTURE_ROOT/received/var/byob/output
    printf mutated > "$source/private-source.txt"
    printf private > "$source/remote-only.txt"
-   rm -rf "$source/out"
-   if [[ $FIXTURE_MODE == symlink-out ]]; then ln -s . "$source/out"; exit 0; fi
+   rm -rf "$output"
+   if [[ $FIXTURE_MODE == symlink-out ]]; then ln -s . "$output"; exit 0; fi
    if [[ $FIXTURE_MODE == missing-out ]]; then exit 0; fi
-   mkdir -p "$source/out"
-   cp -a "$source/relative-links/." "$source/out/"
-   cp "$FIXTURE_ROOT/received/var/workdir/inputs/0/out/generated.txt" "$source/out/first.txt"
-   cp "$FIXTURE_ROOT/received/var/workdir/inputs/1/out/generated.txt" "$source/out/second.txt"
+   mkdir -p "$output"
+   cp -a "$source/relative-links/." "$output/"
+   cp "$FIXTURE_ROOT/received/var/workdir/inputs/0/out/generated.txt" "$output/first.txt"
+   cp "$FIXTURE_ROOT/received/var/workdir/inputs/1/out/generated.txt" "$output/second.txt"
    printf 'developer output\n'
    printf 'developer error stream\n' >&2 ;;
  inspect) if [[ $FIXTURE_MODE == container-failure ]]; then printf 7; else printf 0; fi ;;

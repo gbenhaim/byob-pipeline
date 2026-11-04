@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
-mkdir -p out
-printf 'Generated from reviewed source\n' > out/generated.txt
+mkdir -p "$BUILD_OUTPUT"
+printf 'Generated from reviewed source\n' > "$BUILD_OUTPUT/generated.txt"

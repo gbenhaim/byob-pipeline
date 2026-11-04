@@ -125,6 +125,49 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 			}
 		})
 
+		It("restores named inputs into task directories", func() {
+			fixtureCommand("use-archive", `destination=${1#*=}
+mkdir -p "$destination/out"
+printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
+`)
+			root := filepath.Join(GinkgoT().TempDir(), "inputs")
+			second := "oci:registry.example/other@sha256:" + strings.Repeat("b", 64)
+
+			_, stderr, err := runCLIStreams(
+				"restore-inputs", "--root="+root, "--",
+				"codegen="+ref, "package="+second,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stderr).To(ContainSubstring("Restored build artifact codegen into " + filepath.Join(root, "codegen")))
+			Expect(stderr).To(ContainSubstring("Restored build artifact package into " + filepath.Join(root, "package")))
+
+			for name, want := range map[string]string{"codegen": ref, "package": second} {
+				data, err := os.ReadFile(filepath.Join(root, name, "out/shared.txt"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).To(Equal(want))
+			}
+		})
+
+		It("rejects duplicate, mixed, and unsafe artifact names", func() {
+			root := GinkgoT().TempDir()
+			second := "oci:registry.example/other@sha256:" + strings.Repeat("b", 64)
+			rejected := []struct {
+				args []string
+				want string
+			}{
+				{[]string{"codegen=" + ref, "codegen=" + second}, "duplicate build artifact name"},
+				{[]string{"codegen=" + ref, second}, "names must be set on every input"},
+				{[]string{"../codegen=" + ref}, "invalid build artifact reference"},
+				{[]string{"Codegen=" + ref}, "invalid build artifact reference"},
+				{[]string{"=" + ref}, "invalid build artifact reference"},
+			}
+			for _, item := range rejected {
+				_, stderr, err := runCLIStreams(append([]string{"restore-inputs", "--root=" + root, "--"}, item.args...)...)
+				Expect(err).To(HaveOccurred())
+				Expect(stderr + err.Error()).To(ContainSubstring(item.want))
+			}
+		})
+
 		It("rejects invalid references", func() {
 			invalidReferences := []string{
 				"",
@@ -223,6 +266,50 @@ printf '%s' "${1%%=*}" > "$destination/out/shared.txt"
 			})
 		}
 
+		It("selects the archive layout from artifact references", func() {
+			ref := "oci:registry.example/build@sha256:" + strings.Repeat("b", 64)
+			second := "oci:registry.example/other@sha256:" + strings.Repeat("c", 64)
+			fixtureCommand("use-archive", `destination=${1#*=}
+name=${destination##*/}
+mkdir -p "$destination/out"
+printf '%s' "$name" > "$destination/out/hello.txt"
+if [ "$name" = 0 ]; then printf 'linux/amd64\n' > "$destination/.konflux-platform"; fi
+if [ "$name" = 1 ]; then printf 'linux/arm64\n' > "$destination/.konflux-platform"; fi
+`)
+			fixtureCommand("oras", "printf '%s' '{\"digest\":\""+digest+"\"}'\n")
+
+			for _, item := range []struct {
+				layout string
+				refs   []string
+				files  map[string]string
+			}{
+				{layout: "flat", refs: []string{ref}, files: map[string]string{"hello.txt": "0"}},
+				{layout: "platform", refs: []string{ref, second}, files: map[string]string{"linux-amd64/hello.txt": "0", "linux-arm64/hello.txt": "1"}},
+				{layout: "named", refs: []string{"first=" + ref, "second=" + second}, files: map[string]string{"first/hello.txt": "first", "second/hello.txt": "second"}},
+				{layout: "named", refs: []string{"build=" + ref}, files: map[string]string{"build/hello.txt": "build"}},
+			} {
+				root := GinkgoT().TempDir()
+				archive := filepath.Join(root, "payload.tar.gz")
+				_, stderr, err := runCLIStreams(append([]string{
+					"publish",
+					"--inputs=" + filepath.Join(root, "inputs"),
+					"--package=" + filepath.Join(root, "package"),
+					"--archive=" + archive,
+					"--workdir=" + root,
+					"--image=localhost:5000/team/output:test",
+					"--url-result=" + filepath.Join(root, "url"),
+					"--digest-result=" + filepath.Join(root, "digest"),
+					"--auth-dir=" + filepath.Join(root, "no-auth"),
+					"--",
+				}, item.refs...)...)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stderr).To(ContainSubstring("Packing " + item.layout + " layout"))
+				for path, want := range item.files {
+					Expect(string(mustReadFile(filepath.Join(root, "package", path)))).To(Equal(want))
+				}
+			}
+		})
+
 		It("restores and packs inputs before publishing", func() {
 			root := GinkgoT().TempDir()
 			ref := "oci:registry.example/build@sha256:" + strings.Repeat("b", 64)
@@ -238,7 +325,6 @@ printf hello > "$destination/out/hello.txt"
 				"--inputs="+filepath.Join(root, "inputs"),
 				"--package="+filepath.Join(root, "package"),
 				"--archive="+archive,
-				"--layout=flat",
 				"--workdir="+root,
 				"--image=localhost:5000/team/output:test",
 				"--url-result="+filepath.Join(root, "url"),

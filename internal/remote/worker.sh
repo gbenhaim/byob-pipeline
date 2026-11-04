@@ -54,6 +54,7 @@ create_builder_container() {
 			--workdir /var/source \
 			--env HOME=/var/workdir/home \
 			--env BUILD_INPUTS=/var/workdir/inputs \
+			--env BUILD_OUTPUT=/var/byob/output \
 			"$BUILDER_IMAGE" \
 			"$@"
 	)
@@ -83,9 +84,22 @@ copy_home() {
 		--owner=1000 --group=0 --mode=0700 --numeric-owner
 }
 
-# Copy the source checkout and indexed build inputs into the container.
+# Create an empty BUILD_OUTPUT whose parent the build user cannot replace.
+copy_output_directory() {
+	mkdir -m 0755 "$WORKER_DIR/output-parent"
+	copy_directory "$WORKER_DIR/output-parent" "/" \
+		'flags=rh;s,^\.,var/byob,' \
+		--owner=0 --group=0 --mode=0755 --numeric-owner
+	mkdir -m 0775 "$WORKER_DIR/empty-output"
+	copy_directory "$WORKER_DIR/empty-output" "/" \
+		'flags=rh;s,^\.,var/byob/output,' \
+		--owner=1000 --group=0 --mode=0775 --numeric-owner
+}
+
+# Copy the source checkout, indexed inputs, and empty output directory.
 copy_build_inputs() {
 	copy_home
+	copy_output_directory
 	copy_directory "$WORKER_DIR/source" "/" \
 		'flags=rh;s,^\.,var/source,' \
 		--owner=1000 --group=0 --numeric-owner
@@ -106,21 +120,22 @@ run_build_container() {
 	fi
 }
 
-# Transfer only out/ from the source snapshot back to the task pod.
+# Transfer only BUILD_OUTPUT back to the task pod.
 collect_build_output() {
-	mkdir "$WORKER_DIR/returned-source" "$WORKER_DIR/output"
-	# Copy the parent so Podman preserves an out/ symlink instead of following it.
-	# This snapshot stays on the VM; only out/ is transferred to the task pod.
-	podman cp "$CONTAINER_ID:/var/source/." \
-		"$WORKER_DIR/returned-source/"
+	mkdir "$WORKER_DIR/returned-output" "$WORKER_DIR/output"
+	# Copy the parent so Podman preserves an output symlink
+	# instead of following it. The snapshot stays on the VM.
+	podman cp "$CONTAINER_ID:/var/byob/." \
+		"$WORKER_DIR/returned-output/"
 
-	local output_dir="$WORKER_DIR/returned-source/out"
+	local output_dir="$WORKER_DIR/returned-output/output"
 	if [[ ! -d "$output_dir" || -L "$output_dir" ]]; then
-		echo 'out/ must be a real directory' >&2
+		echo 'BUILD_OUTPUT must be a real directory' >&2
 		exit 1
 	fi
 
-	mv "$output_dir" "$WORKER_DIR/output/out"
+	find "$output_dir" -mindepth 1 -maxdepth 1 \
+		-exec mv {} "$WORKER_DIR/output/" \;
 }
 
 # Execute the complete remote-build lifecycle.

@@ -18,7 +18,7 @@ BYOB's build image is untrusted, so the generated Task has three distinct steps:
    checkout; the developer image does not need the BYOB CLI.
 3. A trusted SSH step runs only for a remote host, using rootless Podman and
    `podman cp` to transfer the original source and preceding build outputs. It
-   returns only `out/`, preserving the local checkout. It has no privileged or
+   returns only `$BUILD_OUTPUT`, preserving the local checkout. It has no privileged or
    host-volume option.
 
 Both paths consume `build-cmd` and `build-args` arrays. The build arguments
@@ -30,8 +30,8 @@ The generator also wires platform metadata and the remote builder input result.
 Selection, SSH/OTP orchestration, and image recording live in `internal/remote`.
 Only the VM's Bash/Podman worker is embedded as shell code in the CLI.
 The local Task's private output staging volume and `BUILD_ARTIFACT` export are
-retained. Both local and remote scripts read the `BUILD_ARTIFACTS` array inputs at
-`$BUILD_INPUTS/<index>/out/`, starting at index zero.
+retained. Both local and remote scripts read labeled `BUILD_ARTIFACTS` inputs at
+`$BUILD_INPUTS/<task>/out/`. Bare references, used by pack, stay in index order.
 It intentionally omits upstream Buildah-specific image tagging, GPU flags,
 automatic credential forwarding, and shared-volume assumptions.
 

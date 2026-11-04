@@ -1,6 +1,6 @@
 # Bring-your-own-build pipelines
 
-A Tekton catalog for the build portion of [ADR 73](https://github.com/konflux-ci/architecture/pull/387). It checks out an exact source revision, runs a configured build command, and publishes the contents of `out/` as an OCI artifact. Trusted Tasks use the PoC Go CLI; the developer image only needs the build executable and its runtime.
+A Tekton catalog for the build portion of [ADR 73](https://github.com/konflux-ci/architecture/pull/387). It checks out an exact source revision, runs a configured build command, and publishes the contents of `$BUILD_OUTPUT` as an OCI artifact. Trusted Tasks use the PoC Go CLI; the developer image only needs the build executable and its runtime.
 
 ## Pipelines
 
@@ -14,13 +14,14 @@ A Tekton catalog for the build portion of [ADR 73](https://github.com/konflux-ci
 
 ## Build contract
 
-Commit an executable `build.sh` that writes at least one regular file to `out/`.
-The default `build-cmd` is `["./build.sh"]`; it selects the executable and any
-fixed leading arguments. Set the separate `build-args` array on the
-PipelineTask to append arguments to that command. Each array element is passed
-as one argv entry, directly from the restored checkout at `/var/source`,
-without shell parsing. The selected image must contain the command and its
-runtime dependencies. Builds may fetch dependencies.
+Commit an executable `build.sh` that writes at least one regular file to
+`$BUILD_OUTPUT`. The task sets that variable to an empty directory outside the
+checkout, `/var/byob/output`. The default `build-cmd` is `["./build.sh"]`; it
+selects the executable and any fixed leading arguments. Set the separate
+`build-args` array on the PipelineTask to append arguments to that command.
+Each array element is passed as one argv entry, directly from the restored
+checkout at `/var/source`, without shell parsing. The selected image must
+contain the command and its runtime dependencies. Builds may fetch dependencies.
 
 For example, set `build-args` on the `build` PipelineTask like this:
 
@@ -31,11 +32,18 @@ For example, set `build-args` on the `build` PipelineTask like this:
   - release
 ```
 
-Only validated files from `out/` are exported; source files and caches are not.
-Chained builds receive earlier outputs at `$BUILD_INPUTS/<index>/out/` and must
-copy any files they want to retain into their own `out/`. Packaging supports a
-flat layout for one build or a platform layout for matrix outputs. The default
-OCI artifact type is `application/vnd.konflux.build-output.v1`.
+Only validated files from `$BUILD_OUTPUT` are exported; source files and caches
+are not. A directory named `out/` in the repository stays in the checkout and
+is not published. Chained builds receive earlier outputs at
+`$BUILD_INPUTS/<task>/out/`. The pipeline author labels each input with the
+producing task name, for example `codegen=$(tasks.codegen.results.BUILD_ARTIFACT)`.
+A chained build must copy any files it wants to retain into its own
+`$BUILD_OUTPUT`. `pack` selects the archive layout from its artifact references.
+One bare reference publishes files at the archive root. Several bare references
+use each artifact's platform marker as its directory. A
+`task=$(tasks.task.results.BUILD_ARTIFACT)` entry publishes that task's files
+under `task/`. The default OCI artifact type is
+`application/vnd.konflux.build-output.v1`.
 
 ## Try it
 
@@ -130,10 +138,13 @@ Prerequisites:
   `kind-registry/internal-registry-client-auth`. The suite copies it to
   `byob-registry-auth` and attaches it to `byob-build`.
 - A public Git branch that is already pushed. Its commit must contain an
-  executable root `build.sh`. The chained run also needs an executable
-  `scripts/generate.sh` whose `out/generated.txt` is copied into the build
-  output. `https://github.com/gbenhaim/byob-system-fixture` branch `main`
-  satisfies that contract.
+  executable root `build.sh` that writes its deliverables to `$BUILD_OUTPUT`.
+  The chained run also needs an executable `scripts/generate.sh` that writes
+  `$BUILD_OUTPUT/generated.txt`. The build copies
+  `$BUILD_INPUTS/codegen/out/generated.txt` into its own output.
+  `examples/component` shows that contract.
+  `https://github.com/gbenhaim/byob-system-fixture` still writes to `out/`
+  and `$BUILD_INPUTS/0`, so update it before using it with `make system-test`.
 
 The multi-platform controller is optional. The remote run requests
 `linux/arm64`. The matrix run requests `linux/amd64` and `linux/arm64`. When
@@ -218,8 +229,9 @@ those claims depend on the cluster, Chains, SCM, and Conforma assumptions below.
 - Checkout is requested at an exact source commit and exposes the repository
   URL and commit for provenance. Trusted build Tasks run the developer command
   as a non-root user, without privilege escalation or Linux capabilities.
-- The source checkout, build workspace, and exported output are kept in separate
-  volumes. Only validated files from `out/` are exported. Chained and matrix
+- The source checkout, build workspace, script output, and exported output are
+  kept in separate volumes. Only validated files from `$BUILD_OUTPUT` are
+  exported. Chained and matrix
   handoffs contain build outputs and platform metadata, not the source tree or
   caches. `pack` publishes the build outputs as the final OCI artifact.
 - These controls provide inputs for provenance and policy evaluation. The
