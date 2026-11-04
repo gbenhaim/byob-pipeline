@@ -196,9 +196,8 @@ Prerequisites:
   The chained run also needs an executable `scripts/generate.sh` that writes
   `$BUILD_OUTPUT/generated.txt`. The build copies
   `$BUILD_INPUTS/codegen/out/generated.txt` into its own output.
-  `examples/component` shows that contract.
-  `https://github.com/gbenhaim/byob-system-fixture` still writes to `out/`
-  and `$BUILD_INPUTS/0`, so update it before using it with `make system-test`.
+  `examples/component` and
+  `https://github.com/gbenhaim/byob-system-fixture` follow that contract.
 
 The multi-platform controller is optional. The remote run requests
 `linux/arm64`. The matrix run requests `linux/amd64` and `linux/arm64`. When
