@@ -271,8 +271,14 @@ func fetchLayer(
 }
 
 // orasFetchArgs builds an oras fetch invocation with the registry options for this unpack.
+// oras 1.3 accepts --no-tty on blob fetch. Manifest fetch prints the manifest
+// on stdout and does not accept that flag.
 func orasFetchArgs(command, authfile string, plain bool, extra ...string) []string {
-	args := []string{command, "fetch", "--no-tty"}
+	args := []string{command, "fetch"}
+	if command == "blob" {
+		args = append(args, "--no-tty")
+	}
+
 	args = append(args, extra...)
 	if authfile != "" {
 		args = append(args, "--registry-config", authfile)

@@ -180,7 +180,8 @@ var _ = Describe("unpack", func() {
 
 		calls := orasCalls(logPath)
 		Expect(calls).To(HaveLen(2))
-		Expect(calls[0]).To(ContainElements("manifest", "fetch", "--no-tty", "--plain-http", "--registry-config", filepath.Join(auth, "config.json"), imageReference()))
+		Expect(calls[0]).To(ContainElements("manifest", "fetch", "--plain-http", "--registry-config", filepath.Join(auth, "config.json"), imageReference()))
+		Expect(calls[0]).NotTo(ContainElement("--no-tty"))
 		Expect(calls[1]).To(ContainElements("blob", "fetch", "--no-tty", "--plain-http", "localhost:5000/team/output@"+layerDigest))
 		Expect(calls[1]).NotTo(ContainElement(imageReference()))
 		Expect(orasEnv(logPath, "SSL_CERT_FILE")).To(Equal(ca))

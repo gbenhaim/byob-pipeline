@@ -99,4 +99,12 @@ var _ = Describe("byob-matrix pipeline", Ordered, func() {
 		Expect(pullMember(reference, "linux-amd64/hello.txt")).To(HavePrefix("Built on "))
 		Expect(pullMember(reference, "linux-arm64/hello.txt")).To(HavePrefix("Built on "))
 	})
+
+	It("unpacks each platform directory with the build-output StepAction", func() {
+		reference := manifestReference(image, pipelineResults(name)["IMAGE_DIGEST"])
+		unpacked := unpackBuildOutput(reference, "linux-amd64/hello.txt", "linux-arm64/hello.txt")
+
+		Expect(unpacked["linux-amd64/hello.txt"]).To(HavePrefix("Built on "))
+		Expect(unpacked["linux-arm64/hello.txt"]).To(HavePrefix("Built on "))
+	})
 })

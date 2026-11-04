@@ -62,15 +62,7 @@ requires that artifact type, the layer name `payload.tar.gz`, and the layer
 media type `application/vnd.oci.image.layer.v1.tar+gzip`.
 
 ```yaml
-steps:
-- name: unpack
-  ref:
-    name: unpack-build-output
-  params:
-  - name: image
-    value: registry.example/org/component@sha256:DIGEST
-  - name: destination
-    value: /var/workdir/output
+stepTemplate:
   volumeMounts:
   - name: output
     mountPath: /var/workdir/output
@@ -81,13 +73,23 @@ steps:
     mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
     subPath: ca-bundle.crt
     readOnly: true
+steps:
+- name: unpack
+  ref:
+    name: unpack-build-output
+  params:
+  - name: image
+    value: registry.example/org/component@sha256:DIGEST
+  - name: destination
+    value: /var/workdir/output
 ```
 
 The destination is an empty directory writable by UID 1000. The StepAction runs
 as that user, with privilege escalation disabled and all Linux capabilities
-dropped. The Task supplies the volume mounts: the destination, plus
-`registry-auth` (`config.json`) and `trusted-ca` (`ca-bundle.crt`) when the
-registry needs them. Install
+dropped. Declare the volumes on the Task and mount them from the step
+template: the destination, plus `registry-auth` (`config.json`) and
+`trusted-ca` (`ca-bundle.crt`) when the registry needs them. Tekton applies
+that template after it inlines the StepAction. Install
 [unpack-build-output.yaml](stepactions/unpack-build-output/0.1/unpack-build-output.yaml)
 in the Task namespace, or resolve that file with a StepAction resolver. A
 Pipeline references a Task, so a release Pipeline keeps its own Task and uses
@@ -169,9 +171,11 @@ StepAction, Pipelines, PipelineRun examples, and the policy Pipeline.
 ### System tests
 
 `make system-test` runs `byob`, `byob-chained`, `byob-remote`, `byob-matrix`,
-and the Conforma integration scenario. The suite is the module `tests/system`,
-so it is not part of `make check`. It never installs or deletes the Kind
-cluster or Konflux.
+and the Conforma integration scenario. The `byob` and `byob-matrix` scenarios
+also run the `unpack-build-output` StepAction on the published manifest and
+check the unpacked files. The suite is the module `tests/system`, so it is not
+part of `make check`. It never installs or deletes the Kind cluster or
+Konflux.
 
 Prerequisites:
 

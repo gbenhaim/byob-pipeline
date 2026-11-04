@@ -218,6 +218,7 @@ func prepareNamespace(caPEM string) {
 		"-f", filepath.Join(root, "examples/platform/serviceaccounts.yaml"),
 		"-f", filepath.Join(root, "task/run-build/0.1/run-build.yaml"),
 		"-f", filepath.Join(root, "task/pack/0.1/pack.yaml"),
+		"-f", filepath.Join(root, "stepactions/unpack-build-output/0.1/unpack-build-output.yaml"),
 		"-f", filepath.Join(root, "task/run-build-remote/0.1/run-build-remote.yaml"),
 		"-f", filepath.Join(root, "pipelines/byob.yaml"),
 		"-f", filepath.Join(root, "pipelines/byob-chained.yaml"),

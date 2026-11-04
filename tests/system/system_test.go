@@ -83,4 +83,11 @@ var _ = Describe("byob pipeline", Ordered, func() {
 		reference := image + "@" + pipelineResults(name)["IMAGE_DIGEST"]
 		Expect(pullHello(reference)).To(HavePrefix("Built on "))
 	})
+
+	It("unpacks hello.txt with the build-output StepAction", func() {
+		reference := manifestReference(image, pipelineResults(name)["IMAGE_DIGEST"])
+		unpacked := unpackBuildOutput(reference, "hello.txt")
+
+		Expect(unpacked["hello.txt"]).To(HavePrefix("Built on "))
+	})
 })
