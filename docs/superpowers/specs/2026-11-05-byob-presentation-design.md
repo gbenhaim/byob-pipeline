@@ -1,6 +1,13 @@
 # BYOB presentation and local Kind demo
 
-Status: Proceeding with the local slide presentation selected by the user.
+Status: The user selected the existing ADR 0073 presentation as the shipped deck.
+
+The standalone `0073-bring-your-own-build-logic.html` from the architecture
+PR worktree is copied unchanged to `docs/presentation/index.html`. Its embedded
+styles, JavaScript, seven-slide narrative, notes, and controls replace the
+original separate HTML/CSS/JavaScript design. The earlier slide proposals below
+are retained as design history. The local Kind demo and UI walkthrough remain
+the companion demonstration; the presenter script follows the selected deck.
 
 ## Intent
 

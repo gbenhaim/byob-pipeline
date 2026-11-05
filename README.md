@@ -5,8 +5,8 @@ A Tekton catalog for the build portion of [ADR 73](https://github.com/konflux-ci
 ## Presentation and local demo
 
 Run `make presentation` and open <http://127.0.0.1:4173> for a seven-minute
-interactive presentation for developers and managers. It includes build-stage
-inspection, policy examples, keyboard navigation, and speaker notes.
+interactive presentation for developers and managers. It uses the selected
+ADR 73 deck, with diagrams, keyboard navigation, an overview, and speaker notes.
 
 The [demo runbook](docs/presentation/README.md) and
 [presenter script](docs/presentation/presenter-script.md) cover a real

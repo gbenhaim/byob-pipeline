@@ -3,667 +3,2267 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#111919" />
+    <meta name="color-scheme" content="dark" />
     <meta
       name="description"
-      content="A seven-minute interactive introduction to Konflux bring-your-own-build: the problem, the trust boundary, and a real Kind demo."
+      content="The Konflux BYOB proof of concept: implemented build workflow, provenance policy, and remaining SLSA platform requirements."
     />
-    <title>BYOB — Your build. Our trust boundary.</title>
-    <link rel="stylesheet" href="styles.css" />
-    <script src="app.js" defer></script>
+    <title>Bring your own build logic · Konflux ADR 0073</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --navy: #050b28;
+        --blue: #004884;
+        --accent: #48b5ff;
+        --ice: #d9efff;
+        --paper: #f3f7fb;
+        --ink: #102c45;
+        --muted: #a9bfd2;
+        --line: #29435c;
+        font-family: "Inter", "Segoe UI", Arial, sans-serif;
+        font-synthesis: none;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #020617;
+        color: white;
+        overflow: hidden;
+      }
+      button,
+      a {
+        -webkit-tap-highlight-color: transparent;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.35;
+      }
+      button:focus-visible,
+      a:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 5px;
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 4px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .chrome {
+        height: 76px;
+        padding: 0 36px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      .brand {
+        width: 154px;
+        height: 39px;
+      }
+      .chrome-label {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .status {
+        border: 1px solid #38516d;
+        padding: 5px 10px;
+        border-radius: 4px;
+        color: var(--ice);
+        letter-spacing: 0.06em;
+      }
+      #viewport {
+        position: absolute;
+        inset: 76px 0 88px;
+        overflow: hidden;
+      }
+      #stage {
+        width: 1440px;
+        height: 810px;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform-origin: center;
+      }
+      .slide {
+        width: 1440px;
+        height: 810px;
+        padding: 62px 76px 46px;
+        background: var(--navy);
+        display: flex;
+        flex-direction: column;
+        color: white;
+        overflow: hidden;
+      }
+      .eyebrow {
+        margin: 0 0 19px;
+        color: var(--accent);
+        font-size: 15px;
+        font-weight: 650;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: 86px;
+        font-weight: 650;
+        line-height: 1.04;
+        letter-spacing: -0.055em;
+      }
+      h2 {
+        max-width: 1190px;
+        font-size: 53px;
+        line-height: 1.1;
+        font-weight: 650;
+        letter-spacing: -0.04em;
+      }
+      h3 {
+        font-size: 27px;
+        line-height: 1.25;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+      p {
+        font-size: 23px;
+        line-height: 1.48;
+      }
+      .lede {
+        margin-top: 21px;
+        max-width: 1110px;
+        color: var(--muted);
+        font-size: 25px;
+      }
+      .accent {
+        color: var(--accent);
+      }
+      .muted {
+        color: var(--muted);
+      }
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+      code {
+        font-size: 0.88em;
+      }
+      .slide-footer {
+        margin-top: auto;
+        padding-top: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      .slide-footer a {
+        color: inherit;
+      }
+      .slide-footer .page {
+        white-space: nowrap;
+        letter-spacing: 0.08em;
+      }
+      .cover-grid {
+        display: grid;
+        grid-template-columns: 1.25fr 1fr;
+        gap: 75px;
+        align-items: center;
+        flex: 1;
+      }
+      .cover h1 span {
+        color: var(--accent);
+      }
+      .cover .subtitle {
+        margin-top: 30px;
+        max-width: 620px;
+        color: #c6d9e9;
+        font-size: 27px;
+        line-height: 1.4;
+      }
+      .standards {
+        display: flex;
+        gap: 32px;
+        margin-top: 42px;
+      }
+      .standard {
+        padding-left: 16px;
+        border-left: 3px solid var(--accent);
+      }
+      .standard strong {
+        font-size: 24px;
+        font-weight: 600;
+      }
+      .standard small {
+        display: block;
+        margin-top: 6px;
+        font-size: 16px;
+        color: var(--muted);
+      }
+      .terminal {
+        border: 1px solid #34516e;
+        border-radius: 10px;
+        background: #0b1834;
+        overflow: hidden;
+      }
+      .terminal-title {
+        padding: 18px 25px;
+        border-bottom: 1px solid #29435c;
+        color: var(--muted);
+        font-size: 15px;
+        letter-spacing: 0.04em;
+      }
+      .terminal pre {
+        margin: 0;
+        padding: 32px 30px;
+        font-size: 23px;
+        line-height: 1.75;
+        color: #e6f4ff;
+        white-space: pre-wrap;
+      }
+      .terminal .comment {
+        color: #90abc2;
+      }
+      .terminal .filename {
+        color: var(--accent);
+      }
+      .terminal-bottom {
+        border-top: 1px solid #29435c;
+        padding: 23px 29px;
+        font-size: 19px;
+        line-height: 1.45;
+        color: #c3d8e9;
+      }
+      .problem-paths {
+        margin-top: 43px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 54px;
+      }
+      .problem-path {
+        border-top: 2px solid #a9c3d7;
+        padding-top: 22px;
+      }
+      .path-label {
+        color: var(--accent);
+        font-size: 15px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        margin-bottom: 17px;
+      }
+      .path-steps {
+        list-style: none;
+        padding: 0;
+        margin: 24px 0 0;
+      }
+      .path-steps li {
+        display: flex;
+        align-items: baseline;
+        gap: 18px;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 23px;
+        line-height: 1.3;
+      }
+      .path-steps span {
+        color: #647f94;
+        font-size: 15px;
+      }
+      .takeaway {
+        margin-top: 38px;
+        padding: 23px 27px;
+        background: #deebf5;
+        font-size: 25px;
+        line-height: 1.4;
+      }
+      .pipeline {
+        list-style: none;
+        margin: 34px 0 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: 1fr 1.25fr 1fr;
+        gap: 38px;
+      }
+      .pipeline li {
+        position: relative;
+        border: 1px solid #38536c;
+        padding: 23px 25px;
+        min-height: 170px;
+      }
+      .pipeline li + li::before {
+        content: "";
+        position: absolute;
+        left: -39px;
+        width: 38px;
+        height: 2px;
+        top: 67px;
+        background: var(--accent);
+      }
+      .pipeline .build-step {
+        border-color: var(--accent);
+        background: #0a2949;
+      }
+      .step-number {
+        color: var(--accent);
+        font-size: 14px;
+        margin-bottom: 13px;
+        letter-spacing: 0.12em;
+      }
+      .pipeline h3 {
+        font-family: Consolas, monospace;
+        font-size: 30px;
+      }
+      .pipeline p {
+        margin-top: 12px;
+        font-size: 20px;
+        color: #c2d6e5;
+      }
+      .artifact-link {
+        margin-top: 16px;
+        text-align: center;
+        font-size: 17px;
+        color: var(--muted);
+      }
+      .ownership {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 54px;
+        margin-top: 30px;
+      }
+      .ownership > div {
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+      }
+      .ownership h3 {
+        font-size: 23px;
+        color: var(--accent);
+      }
+      .ownership p {
+        margin-top: 11px;
+        font-size: 21px;
+      }
+      .ownership small {
+        display: block;
+        margin-top: 10px;
+        font-size: 17px;
+        line-height: 1.4;
+        color: var(--muted);
+      }
+      .requirements {
+        margin-top: 31px;
+      }
+      .requirement {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        gap: 35px;
+        padding: 20px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .requirement h3 {
+        font-size: 24px;
+        color: var(--accent);
+      }
+      .requirement p {
+        font-size: 22px;
+        line-height: 1.38;
+      }
+      .isolation-note {
+        margin-top: 25px;
+        display: flex;
+        gap: 20px;
+        align-items: baseline;
+        font-size: 19px;
+        line-height: 1.4;
+      }
+      .isolation-note strong {
+        color: var(--accent);
+        white-space: nowrap;
+      }
+      .source-review {
+        margin-top: 26px;
+        font-size: 24px;
+        line-height: 1.5;
+        color: #d3e5f2;
+        max-width: 1160px;
+      }
+      .source-chain {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        list-style: none;
+        padding: 0;
+        margin: 40px 0 0;
+        gap: 28px;
+      }
+      .source-chain li {
+        padding-top: 18px;
+        border-top: 3px solid var(--accent);
+      }
+      .source-chain .chain-number {
+        font-size: 15px;
+        color: var(--accent);
+        margin-bottom: 15px;
+      }
+      .source-chain h3 {
+        font-size: 25px;
+      }
+      .source-chain p {
+        font-size: 20px;
+        color: #b8cfe1;
+        margin-top: 13px;
+      }
+      .vsa-rule {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 36px;
+        margin-top: 38px;
+        padding: 23px 27px;
+        background: #0b2d50;
+      }
+      .vsa-rule strong {
+        font-size: 28px;
+        font-weight: 600;
+        color: #8dd0ff;
+        white-space: nowrap;
+      }
+      .vsa-rule p {
+        font-size: 19px;
+        line-height: 1.4;
+        max-width: 640px;
+      }
+      .gates {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 54px;
+        margin-top: 35px;
+      }
+      .gate {
+        border-top: 2px solid var(--accent);
+        padding-top: 20px;
+      }
+      .gate small {
+        color: var(--accent);
+        font-size: 14px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .gate h3 {
+        margin-top: 10px;
+        font-size: 28px;
+      }
+      .gate ul {
+        padding-left: 21px;
+        margin: 19px 0 0;
+      }
+      .gate li {
+        padding-left: 6px;
+        margin: 13px 0;
+        font-size: 21px;
+        line-height: 1.4;
+        color: #d2e4f1;
+      }
+      .gate li::marker {
+        color: var(--accent);
+      }
+      .conclusion {
+        margin-top: 32px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 54px;
+        align-items: start;
+        border-top: 1px solid var(--line);
+        padding-top: 26px;
+      }
+      .conclusion strong {
+        font-size: 29px;
+        font-weight: 600;
+        line-height: 1.25;
+      }
+      .conclusion p {
+        font-size: 19px;
+        color: var(--muted);
+      }
+      .controls {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        height: 88px;
+        padding: 0 36px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .tools,
+      .navigation,
+      .position {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .control {
+        border: 1px solid #263c54;
+        color: #d9e8f3;
+        background: transparent;
+        border-radius: 5px;
+        padding: 10px 13px;
+        font-size: 12px;
+      }
+      .control:hover:not(:disabled) {
+        background: #112844;
+        border-color: #4a769b;
+      }
+      .control kbd {
+        font: inherit;
+        color: #90a9be;
+        margin-right: 6px;
+      }
+      .next {
+        background: var(--blue);
+        border-color: var(--blue);
+        color: white;
+      }
+      .navigation .control {
+        font-size: 18px;
+        min-width: 43px;
+        padding: 7px 13px;
+      }
+      .position {
+        gap: 18px;
+      }
+      #counter {
+        font-variant-numeric: tabular-nums;
+        font-size: 12px;
+        color: #b1c7da;
+        min-width: 38px;
+      }
+      .dots {
+        display: flex;
+        gap: 9px;
+      }
+      .dot {
+        width: 22px;
+        height: 22px;
+        border: 0;
+        padding: 8px 1px;
+        background: transparent;
+      }
+      .dot::after {
+        content: "";
+        display: block;
+        height: 4px;
+        width: 20px;
+        background: #31465f;
+        border-radius: 2px;
+      }
+      .dot[aria-current="step"]::after {
+        background: var(--accent);
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      dialog {
+        color-scheme: dark;
+        width: min(800px, calc(100vw - 32px));
+        max-height: 85dvh;
+        color: #e4eff8;
+        background: #0a1731;
+        border: 1px solid #375574;
+        border-radius: 10px;
+        padding: 30px;
+      }
+      dialog::backdrop {
+        background: rgb(0 3 17 / 0.82);
+      }
+      .dialog-header {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 24px;
+      }
+      .dialog-header h2 {
+        font-size: 26px;
+        letter-spacing: -0.02em;
+      }
+      .dialog-header button {
+        padding: 5px 10px;
+      }
+      #notes-content p,
+      #notes-content li {
+        font-size: 16px;
+        line-height: 1.65;
+      }
+      #notes-content p + p {
+        margin-top: 16px;
+      }
+      #notes-content h3 {
+        font-size: 18px;
+        margin-top: 25px;
+      }
+      #notes-content ul {
+        padding-left: 22px;
+      }
+      #notes-content a {
+        overflow-wrap: anywhere;
+      }
+      .overview-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .overview-slide {
+        text-align: left;
+        color: white;
+        background: #102440;
+        border: 1px solid #34516e;
+        border-radius: 4px;
+        padding: 23px;
+        min-height: 120px;
+        font-size: 19px;
+        line-height: 1.35;
+      }
+      .overview-slide span {
+        display: block;
+        margin-bottom: 13px;
+        font-size: 12px;
+        color: var(--accent);
+        letter-spacing: 0.1em;
+      }
+      .overview-slide[aria-current="step"] {
+        border-color: var(--accent);
+      }
+      @media (max-width: 700px) {
+        body {
+          overflow-y: auto;
+        }
+        .chrome {
+          height: 67px;
+          padding: 0 20px;
+        }
+        .brand {
+          width: 124px;
+          height: auto;
+        }
+        .chrome-label {
+          gap: 9px;
+          font-size: 10px;
+        }
+        .chrome-label .descriptor {
+          display: none;
+        }
+        .status {
+          font-size: 10px;
+          padding: 4px 7px;
+        }
+        #viewport {
+          position: relative;
+          inset: auto;
+          overflow: visible;
+        }
+        #stage {
+          position: static;
+          width: 100%;
+          height: auto;
+          transform: none !important;
+        }
+        .slide {
+          width: 100%;
+          height: auto;
+          min-height: calc(100svh - 155px);
+          padding: 30px 25px 28px;
+          overflow: visible;
+        }
+        h1 {
+          font-size: clamp(43px, 11vw, 68px);
+        }
+        h2 {
+          font-size: 34px;
+        }
+        h3 {
+          font-size: 23px;
+        }
+        .eyebrow {
+          font-size: 11px;
+          margin-bottom: 16px;
+        }
+        .lede {
+          font-size: 19px;
+          margin-top: 18px;
+        }
+        .cover-grid,
+        .problem-paths,
+        .ownership,
+        .gates,
+        .conclusion {
+          grid-template-columns: 1fr;
+          gap: 26px;
+        }
+        .cover .subtitle {
+          font-size: 20px;
+          margin-top: 22px;
+        }
+        .standards {
+          margin: 27px 0 10px;
+          gap: 24px;
+        }
+        .standard strong {
+          font-size: 19px;
+        }
+        .standard small {
+          font-size: 13px;
+        }
+        .terminal pre {
+          padding: 20px;
+          font-size: 17px;
+        }
+        .terminal-title {
+          font-size: 12px;
+          padding: 13px 20px;
+        }
+        .terminal-bottom {
+          font-size: 15px;
+          padding: 17px 20px;
+        }
+        .slide-footer {
+          font-size: 11px;
+          padding-top: 28px;
+        }
+        .problem-paths {
+          margin-top: 26px;
+        }
+        .path-label {
+          font-size: 12px;
+        }
+        .path-steps {
+          margin-top: 10px;
+        }
+        .path-steps li {
+          font-size: 18px;
+          padding: 11px 0;
+        }
+        .takeaway {
+          margin-top: 25px;
+          font-size: 19px;
+          padding: 19px;
+        }
+        .pipeline {
+          grid-template-columns: 1fr;
+          margin-top: 25px;
+          gap: 20px;
+        }
+        .pipeline li {
+          min-height: auto;
+          padding: 17px 20px;
+        }
+        .pipeline li + li::before {
+          width: 2px;
+          height: 20px;
+          left: 35px;
+          top: -21px;
+        }
+        .pipeline h3 {
+          font-size: 23px;
+        }
+        .pipeline p {
+          font-size: 17px;
+          margin-top: 8px;
+        }
+        .step-number {
+          font-size: 11px;
+          margin-bottom: 7px;
+        }
+        .artifact-link {
+          font-size: 13px;
+          line-height: 1.5;
+        }
+        .ownership {
+          margin-top: 24px;
+        }
+        .ownership h3 {
+          font-size: 19px;
+        }
+        .ownership p {
+          font-size: 18px;
+        }
+        .ownership small {
+          font-size: 14px;
+        }
+        .requirement {
+          grid-template-columns: 1fr;
+          gap: 8px;
+          padding: 17px 0;
+        }
+        .requirement h3 {
+          font-size: 21px;
+        }
+        .requirement p {
+          font-size: 18px;
+        }
+        .isolation-note {
+          display: block;
+          font-size: 16px;
+        }
+        .isolation-note strong {
+          display: block;
+          margin-bottom: 6px;
+        }
+        .source-review {
+          font-size: 19px;
+        }
+        .source-chain {
+          grid-template-columns: 1fr 1fr;
+          gap: 26px 22px;
+          margin-top: 28px;
+        }
+        .source-chain h3 {
+          font-size: 21px;
+        }
+        .source-chain p {
+          font-size: 16px;
+        }
+        .vsa-rule {
+          display: block;
+          margin-top: 28px;
+          padding: 20px;
+        }
+        .vsa-rule strong {
+          display: block;
+          font-size: 22px;
+          white-space: normal;
+        }
+        .vsa-rule p {
+          font-size: 16px;
+          margin-top: 12px;
+        }
+        .gate h3 {
+          font-size: 24px;
+        }
+        .gate li {
+          font-size: 18px;
+          margin: 12px 0;
+        }
+        .conclusion {
+          margin-top: 25px;
+          gap: 14px;
+        }
+        .conclusion strong {
+          font-size: 24px;
+        }
+        .conclusion p {
+          font-size: 16px;
+        }
+        .controls {
+          height: 76px;
+          padding: 0 16px;
+          gap: 8px;
+          position: sticky;
+          bottom: 0;
+          background: #020617;
+          border-top: 1px solid #1e3048;
+        }
+        .tools {
+          gap: 6px;
+        }
+        .control {
+          padding: 9px 10px;
+          font-size: 11px;
+        }
+        .control kbd,
+        #fullscreen,
+        #print {
+          display: none;
+        }
+        .position {
+          gap: 0;
+        }
+        .dots {
+          display: none;
+        }
+        .navigation {
+          gap: 5px;
+        }
+        .navigation .control {
+          min-width: 34px;
+          padding: 7px 9px;
+        }
+        dialog {
+          padding: 22px;
+        }
+        .overview-grid {
+          gap: 10px;
+        }
+        .overview-slide {
+          padding: 16px;
+          font-size: 15px;
+        }
+      }
+      @media print {
+        @page {
+          size: 1440px 810px;
+          margin: 0;
+        }
+        :root {
+          print-color-adjust: exact;
+          -webkit-print-color-adjust: exact;
+        }
+        body {
+          margin: 0;
+          overflow: visible;
+        }
+        .chrome,
+        .controls,
+        dialog,
+        .sr-only {
+          display: none !important;
+        }
+        #viewport {
+          position: static;
+          overflow: visible;
+        }
+        #stage {
+          position: static;
+          width: 1440px;
+          height: auto;
+          transform: none !important;
+        }
+        .slide,
+        .slide[hidden] {
+          display: flex !important;
+          width: 1440px;
+          height: 810px;
+          break-after: page;
+          page-break-after: always;
+        }
+        .slide:last-child {
+          break-after: auto;
+          page-break-after: auto;
+        }
+        .speaker-notes {
+          display: none !important;
+        }
+      }
+      @media (max-width: 1100px) {
+        .dots {
+          display: none;
+        }
+      }
+      .story {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 30px;
+      }
+      .design-row {
+        border-top: 1px solid var(--line);
+        padding-top: 22px;
+      }
+      .row-label {
+        color: var(--accent);
+        font-size: 15px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin-bottom: 14px;
+      }
+      .design-row h3 {
+        font-size: 40px;
+        font-weight: 550;
+      }
+      .short-support {
+        font-size: 27px;
+        color: #bfd6e8;
+        margin-top: 14px;
+      }
+      .single-takeaway {
+        font-size: 29px;
+        line-height: 1.4;
+        color: #d3e9f8;
+        margin-top: 42px;
+      }
+      .story .single-takeaway {
+        margin-top: 0;
+        color: var(--accent);
+      }
+      .execution-envelope {
+        margin-top: 47px;
+        border: 1px solid #4382b2;
+        padding: 31px 38px 28px;
+      }
+      .ingredients {
+        display: grid;
+        grid-template-columns: 1fr 70px 1fr;
+        align-items: center;
+        gap: 30px;
+        margin: 31px 0;
+      }
+      .ingredients h3 {
+        font-size: 34px;
+        margin-bottom: 15px;
+      }
+      .ingredients code {
+        font-size: 27px;
+        color: #9ed9ff;
+      }
+      .ingredients p {
+        font-size: 23px;
+        margin-top: 13px;
+        color: var(--muted);
+      }
+      .ingredient-plus {
+        font-size: 48px;
+        color: var(--accent);
+        text-align: center;
+      }
+      .execution-caption {
+        border-top: 1px solid var(--line);
+        padding-top: 22px;
+        font-size: 26px;
+      }
+      .quiet-caption {
+        margin-top: 26px;
+        font-size: 23px;
+        color: var(--muted);
+      }
+      .flow-track {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        list-style: none;
+        gap: 32px;
+        padding: 0;
+        margin: 64px 0 0;
+      }
+      .flow-track li {
+        border-top: 3px solid var(--accent);
+        padding-top: 25px;
+        position: relative;
+      }
+      .flow-track li + li::before {
+        content: "";
+        width: 14px;
+        height: 14px;
+        position: absolute;
+        left: -26px;
+        top: 43px;
+        border-top: 2px solid #648ba9;
+        border-right: 2px solid #648ba9;
+        transform: rotate(45deg);
+      }
+      .flow-track h3 {
+        font-size: 31px;
+        margin-bottom: 20px;
+      }
+      .flow-track code,
+      .flow-track span {
+        font-size: 21px;
+        color: #abc9df;
+      }
+      .flow-track + .single-takeaway {
+        margin-top: 65px;
+      }
+      .check-list {
+        list-style: none;
+        margin: 35px 0 0;
+        padding: 0;
+      }
+      .check-list li {
+        font-size: 30px;
+        padding: 21px 0;
+        border-bottom: 1px solid var(--line);
+        line-height: 1.4;
+      }
+      .check-list strong {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .principles {
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+        margin-top: 48px;
+      }
+      .principles > div {
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+      .principles h3 {
+        font-size: 32px;
+        color: var(--accent);
+      }
+      .principles p {
+        font-size: 26px;
+        margin-top: 10px;
+      }
+      .source-answer {
+        display: flex;
+        align-items: center;
+        gap: 60px;
+        margin-top: 45px;
+      }
+      .source-answer strong {
+        font-size: 160px;
+        color: var(--accent);
+        font-weight: 600;
+        letter-spacing: -0.06em;
+        line-height: 1.1;
+      }
+      .source-answer p {
+        font-size: 32px;
+        line-height: 1.6;
+      }
+      .release-track {
+        grid-template-columns: 1fr;
+        gap: 28px;
+        margin-top: 42px;
+      }
+      .release-track li {
+        padding-top: 20px;
+      }
+      .release-track li + li::before {
+        display: none;
+      }
+      .release-track h3 {
+        margin-bottom: 10px;
+      }
+      .release-track + .single-takeaway {
+        margin-top: 36px;
+      }
+      .overview-grid {
+        grid-template-columns: 1fr;
+      }
+      .overview-slide {
+        min-height: auto;
+        padding: 16px 20px;
+        font-size: 18px;
+      }
+      .overview-slide span {
+        display: inline-block;
+        margin: 0 20px 0 0;
+      }
+      @media (max-width: 700px) {
+        .story {
+          gap: 26px;
+          margin-top: 35px;
+        }
+        .design-row h3 {
+          font-size: 27px;
+        }
+        .row-label {
+          font-size: 12px;
+        }
+        .short-support {
+          font-size: 20px;
+        }
+        .single-takeaway {
+          font-size: 22px;
+          margin-top: 30px;
+        }
+        .execution-envelope {
+          margin-top: 30px;
+          padding: 24px;
+        }
+        .ingredients {
+          grid-template-columns: 1fr;
+          gap: 18px;
+          margin: 25px 0;
+        }
+        .ingredients h3 {
+          font-size: 26px;
+          margin-bottom: 10px;
+        }
+        .ingredients code {
+          font-size: 20px;
+          overflow-wrap: anywhere;
+        }
+        .ingredients p {
+          font-size: 17px;
+        }
+        .ingredient-plus {
+          font-size: 32px;
+          text-align: left;
+        }
+        .execution-caption {
+          font-size: 20px;
+        }
+        .quiet-caption {
+          font-size: 18px;
+          line-height: 1.5;
+        }
+        .flow-track {
+          grid-template-columns: 1fr;
+          gap: 28px;
+          margin-top: 34px;
+        }
+        .flow-track li {
+          padding: 18px 0 0;
+        }
+        .flow-track li + li::before {
+          display: none;
+        }
+        .flow-track h3 {
+          font-size: 25px;
+          margin-bottom: 10px;
+        }
+        .flow-track code,
+        .flow-track span {
+          font-size: 17px;
+        }
+        .flow-track + .single-takeaway {
+          margin-top: 30px;
+        }
+        .check-list {
+          margin-top: 26px;
+        }
+        .check-list li {
+          font-size: 22px;
+          padding: 19px 0;
+        }
+        .principles {
+          gap: 25px;
+          margin-top: 30px;
+        }
+        .principles h3 {
+          font-size: 25px;
+        }
+        .principles p {
+          font-size: 20px;
+        }
+        .source-answer {
+          display: block;
+          margin-top: 35px;
+        }
+        .source-answer strong {
+          font-size: 112px;
+        }
+        .source-answer p {
+          font-size: 23px;
+          margin-top: 24px;
+        }
+        .release-track h3 code {
+          font-size: 21px;
+        }
+        .overview-slide {
+          font-size: 15px;
+          padding: 12px;
+        }
+        .overview-slide span {
+          display: block;
+          margin: 0 0 6px;
+        }
+      }
+      /* Two text colors and two sizes across every slide. */
+      .slide {
+        --slide-text: #f5f7fa;
+        --title-size: 52px;
+        --body-size: 28px;
+      }
+      .slide.slide * {
+        color: var(--slide-text);
+        font-size: var(--body-size);
+        font-weight: 400;
+        letter-spacing: normal;
+        line-height: 1.45;
+      }
+      .slide.slide :is(h1, h2),
+      .slide.slide h1 span {
+        color: var(--accent);
+        font-size: var(--title-size);
+        font-weight: 600;
+        line-height: 1.15;
+        letter-spacing: -0.03em;
+      }
+      .slide.slide :is(h3, strong) {
+        font-weight: 600;
+      }
+      .slide.slide :is(h3, strong, .row-label, .terminal-title),
+      .slide.slide h3 code {
+        color: var(--accent);
+      }
+      .slide.slide .row-label {
+        text-transform: none;
+      }
+      .cover-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 64px;
+      }
+      .source-answer {
+        margin-top: 64px;
+      }
+      .principles + .quiet-caption {
+        margin-top: 30px;
+      }
+      @media (max-width: 700px) {
+        .slide {
+          --title-size: 34px;
+          --body-size: 22px;
+        }
+        .cover-grid {
+          grid-template-columns: 1fr;
+          gap: 34px;
+        }
+        .slide.slide :is(pre, code) {
+          overflow-wrap: anywhere;
+        }
+      }
+    </style>
   </head>
   <body>
-    <a class="skip-link" href="#slide-content">Skip to presentation</a>
-    <aside class="rail" aria-label="Presentation outline">
-      <a class="brand" href="#intro" aria-label="BYOB presentation home">
-        <svg viewBox="0 0 32 32" aria-hidden="true">
-          <path
-            d="M16 2 29 9.5v13L16 30 3 22.5v-13Z M3 9.5 16 17l13-7.5 M16 17v13 M9.5 5.75l13 7.5"
-          />
-        </svg>
-        <span
-          >konflux<span class="brand-sub">BUILD / TRUST / RELEASE</span></span
-        >
-      </a>
-      <div class="rail-heading">ARCHITECTURE BRIEFING <span>07 MIN</span></div>
-      <nav id="outline" aria-label="Slides">
-        <a href="#intro" aria-current="step"
-          ><span>01</span>The idea <i>00:00</i></a
-        >
-        <a href="#problem"><span>02</span>The friction <i>00:35</i></a>
-        <a href="#boundary"><span>03</span>The boundary <i>01:15</i></a>
-        <a href="#pipeline"><span>04</span>The implementation <i>02:10</i></a>
-        <a href="#policy"><span>05</span>The release gate <i>03:10</i></a>
-        <a href="#demo"><span>06</span>Show it working <i>04:00</i></a>
-        <a href="#next"><span>07</span>The takeaway <i>06:15</i></a>
-      </nav>
-      <div class="rail-bottom">
-        <span class="status-dot"></span> ADR 73 · PROPOSED
-        <a
-          href="https://github.com/konflux-ci/architecture/pull/387"
-          target="_blank"
-          rel="noreferrer"
-          >Read the proposal <span>↗</span></a
-        >
-        <a href="presenter-script.md" target="_blank"
-          >Presenter script <span>↗</span></a
-        >
-        <span class="credit">Prepared with AI assistance</span>
+    <header class="chrome" aria-label="Presentation identity">
+      <img
+        class="brand"
+        src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTU0IiBoZWlnaHQ9IjM5IiB2aWV3Qm94PSIwIDAgMTU0IDM5IiBmaWxsPSJub25lIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgo8ZyBjbGlwLXBhdGg9InVybCgjY2xpcDBfMV8xMikiPgo8cGF0aCBkPSJNNTguOTkxNSAyOS4wMTM0TDUzLjEyMDggMjEuODE5OFYyOS4wMTM0SDQ5Ljg4NjlWMTIuODYyMkg1My4xMjA4VjIwLjEwMThMNTguOTkxNSAxMi44NjIySDYyLjg5NjFMNTYuMjM1MyAyMC44NjQzTDYzLjA3OTkgMjkuMDA0Mkg1OC45ODIzTDU4Ljk5MTUgMjkuMDEzNFoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik02Ny4zODg3IDI4LjExMzFDNjYuMTIwOCAyNy40MDU3IDY1LjExOTQgMjYuNDIyNiA2NC4zODQ1IDI1LjE2NEM2My42NDAzIDIzLjkwNTMgNjMuMjcyOCAyMi40ODEzIDYzLjI3MjggMjAuOTAxMUM2My4yNzI4IDE5LjMyMDggNjMuNjQwMyAxNy45MTUyIDY0LjM4NDUgMTYuNjU2NUM2NS4xMjg2IDE1LjM5NzkgNjYuMTMgMTQuNDE0OCA2Ny4zODg3IDEzLjcwNzRDNjguNjU2NSAxMyA3MC4wNDM4IDEyLjY0MTcgNzEuNTUwNSAxMi42NDE3QzczLjA1NzIgMTIuNjQxNyA3NC40NzIxIDEzIDc1LjcyMTYgMTMuNzA3NEM3Ni45ODAyIDE0LjQxNDggNzcuOTcyNCAxNS4zOTc5IDc4LjcwNzQgMTYuNjU2NUM3OS40NDI0IDE3LjkxNTIgNzkuODA5OSAxOS4zMyA3OS44MDk5IDIwLjkwMTFDNzkuODA5OSAyMi40NzIxIDc5LjQ0MjQgMjMuOTE0NSA3OC43MDc0IDI1LjE2NEM3Ny45NzI0IDI2LjQyMjYgNzYuOTgwMiAyNy40MDU3IDc1LjcxMjQgMjguMTEzMUM3NC40NDQ1IDI4LjgyMDUgNzMuMDU3MiAyOS4xNzg4IDcxLjU1MDUgMjkuMTc4OEM3MC4wNDM4IDI5LjE3ODggNjguNjQ3MyAyOC44MjA1IDY3LjM4ODcgMjguMTEzMVpNNzQuMTIzIDI1LjYyMzNDNzQuODY3MSAyNS4xODIzIDc1LjQzNjcgMjQuNTU3NiA3NS44NTk0IDIzLjczOTlDNzYuMjcyOCAyMi45MjIzIDc2LjQ4NDEgMjEuOTc2IDc2LjQ4NDEgMjAuODkxOUM3Ni40ODQxIDE5LjgwNzggNzYuMjcyOCAxOC44NzA3IDc1Ljg1OTQgMTguMDYyMkM3NS40NDU5IDE3LjI1MzcgNzQuODY3MSAxNi42MjkgNzQuMTIzIDE2LjE5NzJDNzMuMzc4OCAxNS43NjU0IDcyLjUyNDQgMTUuNTU0MSA3MS41NTk3IDE1LjU1NDFDNzAuNTk1MSAxNS41NTQxIDY5LjczMTQgMTUuNzc0NiA2OC45NzgxIDE2LjE5NzJDNjguMjMzOSAxNi42MjkgNjcuNjQ1OSAxNy4yNTM3IDY3LjIzMjUgMTguMDYyMkM2Ni44MTkxIDE4Ljg3MDcgNjYuNjA3OCAxOS44MTcgNjYuNjA3OCAyMC44OTE5QzY2LjYwNzggMjEuOTY2OCA2Ni44MTkxIDIyLjkyMjMgNjcuMjMyNSAyMy43Mzk5QzY3LjY0NTkgMjQuNTU3NiA2OC4yMzM5IDI1LjE4MjMgNjguOTc4MSAyNS42MjMzQzY5LjcyMjMgMjYuMDY0MyA3MC41ODU5IDI2LjI4NDggNzEuNTU5NyAyNi4yODQ4QzcyLjUzMzYgMjYuMjg0OCA3My4zODggMjYuMDY0MyA3NC4xMjMgMjUuNjIzM1oiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik05Ni42MDQyIDI5LjAxMzRIOTMuMzcwM0w4Ni4wMzg5IDE3LjkzMzZWMjkuMDEzNEg4Mi44MDQ5VjEyLjg0MzhIODYuMDM4OUw5My4zNzAzIDIzLjk0MlYxMi44NDM4SDk2LjYwNDJWMjkuMDEzNFoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0xMTAuMDQ1IDEyLjg2MjJWMTUuNDcxNEgxMDMuMzExVjE5LjYxNDhIMTA4LjQ2NVYyMi4xNzgxSDEwMy4zMTFWMjkuMDA0MkgxMDAuMDc3VjEyLjg2MjJIMTEwLjA0NVoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0xMTYuMTU1IDI2LjQ0MUgxMjIuODYxVjI5LjAwNDJIMTEyLjkxMlYxMi44NjIySDExNi4xNDZWMjYuNDQxSDExNi4xNTVaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBkPSJNMTI3Ljg3OCAxMi44NjIyVjIyLjg1NzlDMTI3Ljg3OCAyMy45NTEyIDEyOC4xNjMgMjQuNzg3MyAxMjguNzMyIDI1LjM2NjFDMTI5LjMwMiAyNS45NDQ5IDEzMC4xMDEgMjYuMjI5NyAxMzEuMTM5IDI2LjIyOTdDMTMyLjE3NyAyNi4yMjk3IDEzMi45OTUgMjUuOTQ0OSAxMzMuNTY1IDI1LjM2NjFDMTM0LjEzNCAyNC43ODczIDEzNC40MTkgMjMuOTUxMiAxMzQuNDE5IDIyLjg1NzlWMTIuODYyMkgxMzcuNjgxVjIyLjgzMDRDMTM3LjY4MSAyNC4xOTkzIDEzNy4zODcgMjUuMzY2MSAxMzYuNzg5IDI2LjMxMjRDMTM2LjE5MiAyNy4yNTg2IDEzNS40MDIgMjcuOTc1MyAxMzQuNDEgMjguNDUzQzEzMy40MTggMjguOTMwNyAxMzIuMzA2IDI5LjE2OTYgMTMxLjA5MyAyOS4xNjk2QzEyOS44ODEgMjkuMTY5NiAxMjguNzk2IDI4LjkzMDcgMTI3LjgyMyAyOC40NTNDMTI2Ljg0IDI3Ljk3NTMgMTI2LjA2OCAyNy4yNTg2IDEyNS40OTggMjYuMzEyNEMxMjQuOTI5IDI1LjM2NjEgMTI0LjY0NCAyNC4yMDg1IDEyNC42NDQgMjIuODMwNFYxMi44NjIySDEyNy44NzhaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBkPSJNMTQ5LjYwNiAyOS4wMTM0TDE0Ni4xMTQgMjMuNTc0NkwxNDIuOTQ1IDI5LjAxMzRIMTM5LjI4OEwxNDQuMzc4IDIwLjg3MzVMMTM5LjIyNCAxMi44NzE0SDE0Mi45NDVMMTQ2LjQzNiAxOC4yODI3TDE0OS41NzggMTIuODcxNEgxNTMuMjM1TDE0OC4xNzIgMjAuOTkyOUwxNTMuMzI2IDI5LjAyMjZIMTQ5LjYwNlYyOS4wMTM0WiIgZmlsbD0id2hpdGUiLz4KPHBhdGggZD0iTTE5LjQ4NjIgMzcuMjI2OUMyOS4zODA1IDM3LjIyNjkgMzcuNDAxNCAyOS4yMDU5IDM3LjQwMTQgMTkuMzExN0MzNy40MDE0IDkuNDE3MzcgMjkuMzgwNSAxLjM5NjQ3IDE5LjQ4NjIgMS4zOTY0N0M5LjU5MTkzIDEuMzk2NDcgMS41NzEwMyA5LjQxNzM3IDEuNTcxMDMgMTkuMzExN0MxLjU3MTAzIDI5LjIwNTkgOS41OTE5MyAzNy4yMjY5IDE5LjQ4NjIgMzcuMjI2OVoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0yMy45NjA0IDIwLjI0ODhDMjAuODA5MiAyMC4yNDg4IDE4LjI0NTkgMjIuODAyOCAxOC4yNDU5IDI1Ljk2MzNDMTguMjQ1OSAyNi4xNzQ2IDE4LjI1NTEgMjYuMzc2NyAxOC4yODI3IDI2LjU3ODhDMTMuMzM5OSAyNC45ODAyIDcuOTM3ODEgMTguNjU5NCAxLjk2NjA4IDE4LjYwNDJDMS41MTU5IDE4LjYwNDIgMS4wMjg5NyAxOC42NDEgMC41NTEyMzUgMTguNzIzN1YxOS45MDg4QzAuOTA5NTM5IDE5Ljg3MjEgMS4yODYyMiAxOS44NzIxIDEuNjUzNzEgMTkuOTI3MkM5LjYwOTg5IDIxLjE4NTkgMTEuMTM1IDMwLjYzOTYgMTcuNjg1NSAzMy4xODQ1QzIyLjIzMzIgMzQuOTQ4NCAyNy4wMjkgMzMuMDU1OCAyOC45MjE2IDI5LjI3MDdDMjkuMzgwOSAyOC4zNjExIDI5LjY3NDkgMjcuMDAxNCAyOS42NzQ5IDI1Ljk1NDFDMjkuNjc0OSAyMi44MDI4IDI3LjEyMDggMjAuMjM5NiAyMy45NjA0IDIwLjIzOTZWMjAuMjQ4OFoiIGZpbGw9IiMwMDQ4ODQiLz4KPHBhdGggZD0iTTE3LjQ0NjYgNi4zNzU5OEMxNC44MDA3IDYuMzc1OTggMTIuNjUwOSA4LjUyNTggMTIuNjUwOSAxMS4xNzE3QzEyLjY1MDkgMTIuMjE5MSAxMi45OTA4IDEzLjE5MjkgMTMuNTYwNCAxMy45ODNDMTMuMzg1OSAxNC4xNDg0IDEzLjE2NTQgMTQuMzA0NiAxMi44OTg5IDE0LjQ1MTZDMTAuOTQyIDE1LjU0NDkgOS45MzE0NSAxNC44OTI2IDUuODI0NzQgMTUuMzMzNkM0LjI0NDUyIDE1LjQ5ODkgMi4zMDYwMSAxNi4wNDEgMC44ODE5NzkgMTcuMjQ0NUMwLjY2MTQ4NCAxNy45MjQ0IDAuNDY4NTUxIDE4LjYyMjYgMC4zMzA3NDIgMTkuMzM5MkMwLjkzNzEwMiAxOC42NTAyIDEuODc0MiAxNy44NTA5IDMuMzYyNTQgMTcuNDE5MUM3LjEyMDE0IDE2LjMyNTggMTAuNTkyOSAxOC4zMjg2IDE0Ljg0NjYgMTcuOTI0NEMxNy41MDE4IDE3LjY3NjMgMTkuNTEzOCAxNy4xMTU5IDIxLjE1ODMgMTQuNzY0QzIyLjA0MDMgMTMuNTA1MyAyMi4yMzMyIDEyLjQzOTYgMjIuMjMzMiAxMS4xNjI1QzIyLjIzMzIgOC41MTY2MSAyMC4wODM0IDYuMzY2NzkgMTcuNDM3NSA2LjM2Njc5TDE3LjQ0NjYgNi4zNzU5OFoiIGZpbGw9IiMwMDQ4ODQiLz4KPHBhdGggZD0iTTIzLjM5MDggMTguODc5OUMyMC40MTQxIDE4Ljg3OTkgMTcuOTk3OSAyMS4yOTYxIDE3Ljk5NzkgMjQuMjcyOEMxNy45OTc5IDI0LjQ2NTcgMTguMDA3MSAyNC42Njc4IDE4LjAyNTQgMjQuODUxNkMxMy4zNTgzIDIzLjMzNTcgOC4yNTAxOCAxNy4zNzMxIDIuNjA5MTkgMTcuMzE4QzEuNzE4MDIgMTcuMzE4IDEuOTc1MjYgMTYuOTU5NyAxLjA4NDEgMTcuMjYyOVYxOC4zMzc4QzEuODY1MDIgMTguMDk4OSAxLjQ0MjQgMTguNDI5NyAyLjMxNTE5IDE4LjU2NzVDOS44MzAzOSAxOS43NjE4IDExLjI4MiAyOC42ODI3IDE3LjQ2NSAzMS4wODk4QzIxLjc1NTUgMzIuNzYxOCAyNi4yOTQgMzAuOTcwMyAyOC4wNzYzIDI3LjM5NjVDMjguNTA4MSAyNi41MzI5IDI4Ljc5MjkgMjUuMjQ2NiAyOC43OTI5IDI0LjI2MzZDMjguNzkyOSAyMS4yODY5IDI2LjM3NjcgMTguODcwNyAyMy40IDE4Ljg3MDdMMjMuMzkwOCAxOC44Nzk5WiIgZmlsbD0iIzQ4QjVGRiIvPgo8cGF0aCBkPSJNMTYuNTU1NSA1LjY0MDk5QzE0LjA1NjUgNS42NDA5OSAxMi4wMjYxIDcuNjcxMzggMTIuMDI2MSAxMC4xNzAzQzEyLjAyNjEgMTEuMTYyNSAxMi4zNDc3IDEyLjA4MTMgMTIuODg5OCAxMi44MjU0QzEyLjcyNDQgMTIuOTgxNiAxMi41MjIzIDEzLjEyODYgMTIuMjY1IDEzLjI2NjRDMTAuNDA5MiAxNC4yOTU0IDkuNDYyOSAxMy42Nzk5IDUuNTg1ODcgMTQuMTAyNUM0LjA5NzUzIDE0LjI1ODcgMi4yNjAwNyAxNC43NjQgMC45MTg3MjkgMTUuOTAzMkMwLjcwNzQyMSAxNi41NDYzIDAuNTMyODYzIDE3LjIwNzggMC4zOTUwNTQgMTcuODg3NkMwLjk3Mzg1MiAxNy4yMzUzIDEuODU1ODMgMTYuNDgyIDMuMjYxNDggMTYuMDY4NkM2LjgxNjk2IDE1LjAzMDQgMTAuMDk2OCAxNi45MzIyIDE0LjExMTcgMTYuNTQ2M0MxNi42MTk4IDE2LjMwNzQgMTguNTIxNiAxNS43ODM3IDIwLjA3NDIgMTMuNTYwNEMyMC45MTAyIDEyLjM2NjEgMjEuMDg0OCAxMS4zNjQ3IDIxLjA4NDggMTAuMTYxMUMyMS4wODQ4IDcuNjYyMTkgMTkuMDU0NCA1LjYzMTgxIDE2LjU1NTUgNS42MzE4MVY1LjY0MDk5WiIgZmlsbD0iIzQ4QjVGRiIvPgo8cGF0aCBkPSJNMTkuNTA0NiAzOUM4Ljc0NjI5IDM5IDAgMzAuMjUzNyAwIDE5LjUwNDZDMCA4Ljc1NTQ4IDguNzQ2MjkgMCAxOS41MDQ2IDBDMzAuMjYyOSAwIDM5LjAwOTIgOC43NDYyOSAzOS4wMDkyIDE5LjUwNDZDMzkuMDA5MiAzMC4yNjI5IDMwLjI2MjkgMzkuMDA5MiAxOS41MDQ2IDM5LjAwOTJWMzlaTTE5LjUwNDYgMi4xNDk4MkM5LjkzMTQ1IDIuMTQ5ODIgMi4xNDk4MiA5LjkzMTQ1IDIuMTQ5ODIgMTkuNTA0NkMyLjE0OTgyIDI5LjA3NzcgOS45MzE0NSAzNi44NTk0IDE5LjUwNDYgMzYuODU5NEMyOS4wNzc3IDM2Ljg1OTQgMzYuODU5NCAyOS4wNzc3IDM2Ljg1OTQgMTkuNTA0NkMzNi44NTk0IDkuOTMxNDUgMjkuMDY4NiAyLjE0OTgyIDE5LjUwNDYgMi4xNDk4MloiIGZpbGw9IiM0OEI1RkYiLz4KPC9nPgo8ZGVmcz4KPGNsaXBQYXRoIGlkPSJjbGlwMF8xXzEyIj4KPHJlY3Qgd2lkdGg9IjE1My4zMzYiIGhlaWdodD0iMzkiIGZpbGw9IndoaXRlIi8+CjwvY2xpcFBhdGg+CjwvZGVmcz4KPC9zdmc+Cg=="
+        alt="Konflux"
+        width="154"
+        height="39"
+      />
+      <div class="chrome-label">
+        <span class="descriptor">BYOB IMPLEMENTATION</span><span>ADR 0073</span
+        ><span class="status">PROOF OF CONCEPT</span>
       </div>
-    </aside>
-
-    <div class="workspace">
-      <header class="topbar">
-        <span class="breadcrumb">KONFLUX <b>/</b> BRING YOUR OWN BUILD</span>
-        <div class="toolbar">
-          <button
-            id="notes-toggle"
-            aria-pressed="false"
-            title="Speaker notes (N)"
-          >
-            Notes <kbd>N</kbd>
-          </button>
-          <button id="fullscreen-toggle" title="Fullscreen (F)">
-            Present <span aria-hidden="true">⛶</span>
-          </button>
-        </div>
-      </header>
-
-      <main id="slide-content" tabindex="-1">
-        <section class="slide hero" id="intro" aria-labelledby="intro-title">
-          <div class="eyebrow">
-            <span class="small-rule"></span> A SMALL CONTRACT. A BIGGER
-            POSSIBILITY.
-          </div>
-          <div class="hero-layout">
+    </header>
+    <main id="viewport" aria-label="Konflux ADR 0073 presentation">
+      <div id="stage">
+        <section
+          class="slide cover"
+          id="slide-1"
+          aria-labelledby="title-1"
+          aria-roledescription="slide"
+          aria-label="1 of 7"
+        >
+          <div class="cover-grid">
             <div>
-              <h1 id="intro-title">
-                Your build.<br /><em
-                  >Our trust<br class="desktop-break" />
-                  boundary.</em
-                >
+              <h1 id="title-1">
+                Bring your own <br /><span>build logic</span>
               </h1>
-              <p class="lede">
-                Bring your own build logic to Konflux.<br />Keep the platform in
-                charge of trust.
+              <p class="subtitle">
+                New artifact types through shared, trusted execution.
               </p>
-              <div class="hero-meta">
-                <span>ADR 73</span><span>DEVELOPERS + MANAGERS</span
-                ><span>7 MINUTES</span>
-              </div>
-            </div>
-            <div
-              class="hero-architecture"
-              aria-label="Platform-owned checkout and packaging surround developer-owned build logic"
-            >
-              <div class="architecture-caption">
-                <span class="status-dot"></span> ONE SHARED BUILD PLATFORM
-              </div>
-              <div class="architecture-node">
-                <span class="node-index">01</span>
-                <div>Checkout<small>Exact source revision</small></div>
-                <span class="owner">PLATFORM</span>
-              </div>
-              <div class="connector"><span>Trusted Artifact</span></div>
-              <div class="architecture-node developer-node">
-                <span class="node-index">02</span>
-                <div>Your build<small>Image + reviewed command</small></div>
-                <span class="owner">DEVELOPER</span>
-              </div>
-              <div class="connector"><span>Build outputs only</span></div>
-              <div class="architecture-node">
-                <span class="node-index">03</span>
-                <div>
-                  Pack &amp; attest<small>OCI output + signed provenance</small>
-                </div>
-                <span class="owner">PLATFORM</span>
-              </div>
-              <div class="architecture-foot">
-                Flexibility inside a fixed execution boundary.
-              </div>
-            </div>
-          </div>
-          <div class="thesis-strip">
-            <span>THE PROPOSAL</span>
-            <p>A new build tool shouldn’t require a new build platform.</p>
-            <span aria-hidden="true">↗</span>
-          </div>
-          <aside class="speaker-notes">
-            <b>00:00–00:35 · Open with the outcome.</b> “A team wants to build a
-            wheel, a binary, or a new artifact. The interesting question is not
-            whether Tekton can run it. It is whether Konflux can still explain
-            and trust what produced it. BYOB separates the build logic from the
-            platform’s trust boundary.”
-          </aside>
-        </section>
-
-        <section
-          class="slide"
-          id="problem"
-          aria-labelledby="problem-title"
-          hidden
-        >
-          <div class="eyebrow">01 / THE PROBLEM</div>
-          <h2 id="problem-title">
-            A new tool.<br /><em>Two expensive detours.</em>
-          </h2>
-          <p class="section-lede">
-            “We just want to build something the catalog doesn’t support yet.”
-          </p>
-          <div class="detours">
-            <article class="detour">
-              <span class="large-index">A</span>
-              <div>
-                <h3>Extend the shared catalog</h3>
-                <div class="journey">
-                  <span>New Task + Pipeline</span><b>→</b
-                  ><span>Platform review</span><b>→</b
-                  ><span>Catalog release</span>
-                </div>
-                <p>Build-tool adoption waits on platform changes.</p>
-              </div>
-              <span class="detour-label">SHARED WORK</span>
-            </article>
-            <article class="detour">
-              <span class="large-index">B</span>
-              <div>
-                <h3>Write a custom Pipeline</h3>
-                <div class="journey">
-                  <span>Custom build</span><b>→</b><span>Custom policy</span
-                  ><b>→</b><span>Policy approval</span>
-                </div>
-                <p>
-                  A build that runs still needs a path through the release gate.
-                </p>
-              </div>
-              <span class="detour-label">REPEATED WORK</span>
-            </article>
-          </div>
-          <div class="takeaway">
-            <span class="label">THE COST</span>
-            <p>
-              Teams solve build logic <strong>and</strong> rebuild the trust
-              story.
-            </p>
-          </div>
-          <a class="source" data-source="adr"
-            >Source: ADR 73 · Context and Goals ↗</a
-          >
-          <aside class="speaker-notes">
-            <b>00:35–01:15 · Explain the cost without invented metrics.</b>
-            “Today there are two paths. Add shared catalog machinery and wait
-            for platform review, or write your own Pipeline and then get a
-            matching release policy approved. Neither scales well when every
-            team brings a new tool. We want teams to own their builds without
-            each team becoming a build-platform maintainer.”
-          </aside>
-        </section>
-
-        <section
-          class="slide"
-          id="boundary"
-          aria-labelledby="boundary-title"
-          hidden
-        >
-          <div class="eyebrow">02 / THE DECISION</div>
-          <h2 id="boundary-title">
-            Move the flexibility.<br /><em>Keep the boundary.</em>
-          </h2>
-          <p class="section-lede">
-            Developers provide the recipe. Konflux owns how that recipe
-            executes.
-          </p>
-          <div class="boundary-layout">
-            <div class="boundary-panel developer-panel">
-              <div class="panel-label">
-                DEVELOPER OWNED <span>EDITABLE</span>
-              </div>
-              <h3>The recipe</h3>
-              <button
-                class="boundary-item active"
-                data-boundary="image"
-                aria-pressed="true"
-              >
-                <span>01</span>Build image<b>↗</b></button
-              ><button
-                class="boundary-item"
-                data-boundary="command"
-                aria-pressed="false"
-              >
-                <span>02</span>Reviewed build command<b>↗</b></button
-              ><button
-                class="boundary-item"
-                data-boundary="outputs"
-                aria-pressed="false"
-              >
-                <span>03</span>Declared outputs<b>↗</b>
-              </button>
-              <p>Ordinary source review covers the build logic.</p>
-            </div>
-            <div class="boundary-panel platform-panel">
-              <div class="panel-label">KONFLUX OWNED <span>FIXED</span></div>
-              <h3>The execution envelope</h3>
-              <div class="platform-list">
-                <span>Checkout + trusted Tasks</span
-                ><span>Isolated execution + credentials</span
-                ><span>Packaging + signed provenance</span
-                ><span>Admission + release policy</span>
-              </div>
-              <p>Build workloads cannot access the signing key.</p>
-            </div>
-          </div>
-          <div class="detail-line" id="boundary-detail" aria-live="polite">
-            <span class="label">BUILD IMAGE</span>
-            <p>
-              A digest-pinned image supplies the toolchain. The current demo
-              policy recognizes the catalog’s task-runner image.
-            </p>
-          </div>
-          <a class="source" data-source="adr"
-            >Source: ADR 73 · Trust model ↗</a
-          >
-          <aside class="speaker-notes">
-            <b>01:15–02:10 · One boundary, two owners.</b> “The developer owns
-            an image and a source-controlled command. Konflux owns checkout,
-            fixed Tasks, credentials, output packaging, and provenance. The
-            developer does not author a Task or choose a ServiceAccount. Click
-            the command to show the actual argv contract. Builds may fetch
-            dependencies: isolation and hermeticity are separate. Production
-            also needs admission controls for influences the release predicate
-            does not show.”
-          </aside>
-        </section>
-
-        <section
-          class="slide"
-          id="pipeline"
-          aria-labelledby="pipeline-title"
-          hidden
-        >
-          <div class="eyebrow">03 / THE IMPLEMENTATION</div>
-          <h2 id="pipeline-title">
-            Three Tasks.<br /><em>One traceable handoff.</em>
-          </h2>
-          <div class="file-caption">
-            <span class="file-icon">{ }</span><code>pipelines/byob.yaml</code
-            ><span>CLICK A STAGE TO INSPECT</span>
-          </div>
-          <div
-            class="pipeline-flow"
-            role="group"
-            aria-label="Inspect the build stages"
-          >
-            <button
-              class="flow-node active"
-              data-stage="checkout"
-              aria-pressed="true"
-            >
-              <span>01 / TRUSTED</span><b>checkout</b
-              ><small>Source @ commit</small>
-            </button>
-            <div class="flow-arrow">→<small>SOURCE_ARTIFACT</small></div>
-            <button class="flow-node" data-stage="build" aria-pressed="false">
-              <span>02 / CONFINED</span><b>run-build</b
-              ><small>Image + command</small>
-            </button>
-            <div class="flow-arrow">→<small>BUILD_ARTIFACT</small></div>
-            <button class="flow-node" data-stage="pack" aria-pressed="false">
-              <span>03 / TRUSTED</span><b>pack</b
-              ><small>OCI build output</small>
-            </button>
-            <div class="flow-arrow short">→</div>
-            <button
-              class="flow-node chains-node"
-              data-stage="chains"
-              aria-pressed="false"
-            >
-              <span>PLATFORM SERVICE</span><b>Chains</b
-              ><small>Sign provenance</small>
-            </button>
-          </div>
-          <div class="inspector">
-            <div>
-              <span class="label" id="stage-label"
-                >CHECKOUT / EXACT SOURCE</span
-              >
-              <h3 id="stage-title">Start with an immutable revision.</h3>
-              <p id="stage-description">
-                The pinned git-clone bundle checks out the requested commit and
-                exports a Trusted Artifact. Git credentials, when used, are
-                mapped only to checkout.
-              </p>
-              <a class="source" id="stage-source" data-source="pipeline"
-                >Open source ↗</a
-              >
-            </div>
-            <div class="code-window">
-              <div class="code-caption">
-                <span></span><span id="code-filename">pipelines/byob.yaml</span
-                ><span>READ FROM REPO</span>
-              </div>
-              <pre><code id="stage-code">- name: revision
-  value: $(params.revision)
-
-SOURCE_ARTIFACT
-CHAINS-GIT_URL
-CHAINS-GIT_COMMIT</code></pre>
-            </div>
-          </div>
-          <div class="variant-line">
-            <span>ALSO IMPLEMENTED</span><span>Chained builds</span
-            ><span>Platform matrix</span><span>Remote build Task</span>
-          </div>
-          <aside class="speaker-notes">
-            <b>02:10–03:10 · Click Build, then Pack.</b> “This is the actual
-            repository Pipeline. Checkout emits SOURCE_ARTIFACT. The build image
-            runs ./build.sh and writes only to BUILD_OUTPUT. The trusted export
-            step publishes those outputs. Pack produces one OCI artifact and the
-            final IMAGE_URL and IMAGE_DIGEST. Chains, a separate platform
-            service, signs the provenance. Additional Pipelines demonstrate
-            chained, matrix, and remote builds; this demo uses the in-cluster
-            path.”
-          </aside>
-        </section>
-
-        <section
-          class="slide"
-          id="policy"
-          aria-labelledby="policy-title"
-          hidden
-        >
-          <div class="eyebrow">04 / THE RELEASE GATE</div>
-          <h2 id="policy-title">
-            “It built” isn’t<br /><em>“it can release.”</em>
-          </h2>
-          <p class="section-lede">
-            Conforma verifies the signed evidence for the artifact’s exact
-            digest.
-          </p>
-          <div class="gate-flow">
-            <span>Artifact @ digest</span><b>→</b
-            ><span>Signature + subject</span><b>→</b><span>BYOB policy</span
-            ><b>→</b><span id="gate-last">Release consumption</span>
-          </div>
-          <div class="policy-layout">
-            <div
-              class="policy-cases"
-              role="group"
-              aria-label="Explore explanatory policy outcomes"
-            >
-              <span class="label">TRY A CASE</span
-              ><button class="case active" data-case="good" aria-pressed="true">
-                <span class="case-dot"></span>Expected build<small
-                  >Signed, connected outputs</small
-                ><b>↗</b></button
-              ><button class="case" data-case="format" aria-pressed="false">
-                <span class="case-dot"></span>Wrong artifact type<small
-                  >Build succeeds; contract changes</small
-                ><b>↗</b></button
-              ><button class="case" data-case="foreign" aria-pressed="false">
-                <span class="case-dot"></span>Foreign build input<small
-                  >Artifact from a different run</small
-                ><b>↗</b></button
-              ><button class="case" data-case="unsigned" aria-pressed="false">
-                <span class="case-dot"></span>Unsigned artifact<small
-                  >Missing trusted signature</small
-                ><b>↗</b>
-              </button>
-            </div>
-            <div class="policy-result" id="policy-result" aria-live="polite">
-              <div class="result-caption">
-                EXPLANATORY EXAMPLE · NOT LIVE CLUSTER OUTPUT
-              </div>
-              <div class="result-status" id="result-status">ALLOW</div>
-              <code id="result-code">TEST_OUTPUT.result = SUCCESS</code>
-              <p id="result-description">
-                The signed subject, source identity, approved builder, Task
-                shape, and artifact wiring satisfy the current policy.
-              </p>
-              <div class="result-footer" id="result-footer">
-                The release Task may consume this digest.
-              </div>
-            </div>
-          </div>
-          <a class="source" data-source="policy"
-            >Source: policy/rules/pipeline.rego + existing integration scenario
-            ↗</a
-          >
-          <aside class="speaker-notes">
-            <b>03:10–04:00 · Click Wrong artifact type.</b> “A signature says
-            who produced the evidence; it does not say that the build followed
-            the policy. Conforma first checks signatures and the subject digest,
-            then examines the recorded build. Here a build can finish
-            successfully and still fail artifact_pack. The integration scenario
-            publishes TEST_OUTPUT. The release example repeats that same
-            validator before unpacking.”
-          </aside>
-        </section>
-
-        <section class="slide" id="demo" aria-labelledby="demo-title" hidden>
-          <div class="eyebrow">
-            05 / THE LIVE DEMO
-            <span class="live-label">LOCAL KIND · REAL PIPELINERUNS</span>
-          </div>
-          <h2 id="demo-title">
-            Build it. Check it.<br /><em>Then unpack it.</em>
-          </h2>
-          <div class="demo-layout">
-            <div class="demo-stages" role="group" aria-label="Demo commands">
-              <button
-                class="demo-stage active"
-                data-demo="build"
-                aria-pressed="true"
-              >
-                <span>01</span>
-                <div>
-                  <b>Run byob.yaml</b
-                  ><small>Checkout → build → pack → Chains</small>
-                </div>
-                <span>↗</span></button
-              ><button
-                class="demo-stage"
-                data-demo="verify"
-                aria-pressed="false"
-              >
-                <span>02</span>
-                <div>
-                  <b>Trigger integration test</b
-                  ><small>Snapshot → scenario → Conforma</small>
-                </div>
-                <span>↗</span></button
-              ><button
-                class="demo-stage"
-                data-demo="release"
-                aria-pressed="false"
-              >
-                <span>03</span>
-                <div>
-                  <b>Consume in a release Pipeline</b
-                  ><small>Verify → unpack-build-output → hello.txt</small>
-                </div>
-                <span>↗</span></button
-              ><button
-                class="demo-stage"
-                data-demo="reject"
-                aria-pressed="false"
-              >
-                <span>04</span>
-                <div>
-                  <b>Prove the rejection</b
-                  ><small>Wrong type → policy failure → no unpack</small>
-                </div>
-                <span>↗</span>
-              </button>
             </div>
             <div class="terminal">
-              <div class="terminal-bar">
-                <span class="terminal-mark">›_</span><span>LOCAL TERMINAL</span
-                ><button
-                  id="copy-command"
-                  title="Copy the selected demo command"
-                >
-                  Copy command
-                </button>
-              </div>
-              <div class="terminal-body">
-                <span class="terminal-comment"
-                  ># Run from the repository root</span
-                >
-                <pre><code id="demo-command">bash scripts/demo.sh build</code></pre>
-                <div class="terminal-divider"></div>
-                <span class="terminal-comment">EVIDENCE TO SHOW</span>
-                <h3 id="demo-evidence-title">
-                  Three successful TaskRuns + a signed digest
-                </h3>
-                <p id="demo-evidence">
-                  Inspect checkout, build, and pack. The script waits for Chains
-                  and prints registry/repository@sha256:…
-                </p>
-                <code class="evidence-command" id="evidence-command"
-                  >bash scripts/demo.sh ui</code
-                >
-              </div>
-              <div class="terminal-foot">
-                <span class="status-dot"></span
-                ><span
-                  >Commands execute in your terminal. This page has no cluster
-                  access.</span
-                >
+              <div class="terminal-title">build.sh</div>
+              <pre>#!/bin/sh
+set -eu
+
+printf 'hello\n' \
+  &gt; "<span class="filename">$BUILD_OUTPUT</span>/hello.txt"</pre>
+              <div class="terminal-bottom">
+                Your script and builder image.<br />Konflux's isolated build
+                Task.
               </div>
             </div>
           </div>
-          <div class="demo-preflight">
-            <a
-              class="source"
-              href="https://localhost:9443"
-              target="_blank"
-              rel="noopener noreferrer"
-              >Open Konflux UI ↗</a
-            ><code>bash scripts/demo.sh ui</code>
+
+          <aside class="speaker-notes" hidden>
+            <p>Konflux / BYOB</p>
+            <p>PoC snapshot · ae92025</p>
+
             <p>
-              Show the prepared runs in Activity → Pipeline runs. The command
-              prints direct links; fresh runs need more time.
+              The BYOB PoC implements a shortcut for introducing new artifact
+              types in Konflux. Developers provide an executable build script
+              and select a builder image through the Pipeline. The platform
+              keeps control of the trusted Task that executes that logic.
+            </p>
+            <p>
+              The default build-cmd is ["./build.sh"]. build-args appends argv
+              entries without shell parsing. The script runs from the restored
+              source checkout and must write at least one regular file to
+              BUILD_OUTPUT. Trusted platform code validates and exports those
+              outputs.
+            </p>
+            <p>
+              This deck describes published commit
+              ae920259cdb87f111e12f2a10e9e01c01896b874. The current
+              demonstration policy approves one pinned builder image; the
+              broader design permits users to select images under the platform's
+              approval policy.
+            </p>
+            <h3>Sources</h3>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/README.md#build-contract"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >PoC build contract</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/examples/component/build.sh"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Example component script</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/konflux-ci/docs/blob/main/antora-lunr-ui/img/logo.svg"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Official Konflux documentation logo</a
+                >
+              </li>
+            </ul>
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="slide-2"
+          aria-labelledby="title-2"
+          aria-roledescription="slide"
+          aria-label="2 of 7"
+          hidden
+        >
+          <h2 id="title-2">Build logic becomes a user input</h2>
+          <div class="story">
+            <div class="design-row">
+              <h3 class="row-label">Today</h3>
+              <p>The build step comes from a trusted Task</p>
+            </div>
+            <div class="design-row">
+              <h3 class="row-label">With BYOB</h3>
+              <p>Users provide the script and builder image</p>
+              <p class="short-support">
+                A trusted Task runs them in an isolated environment.
+              </p>
+            </div>
+            <p class="single-takeaway">
+              New build logic no longer needs a new build Task.
             </p>
           </div>
-          <aside class="speaker-notes">
-            <b>04:00–06:15 · Switch to the prepared Konflux UI tabs.</b> “I ran
-            the setup and rehearsal before this talk. Here are the actual
-            completed objects, not a simulation. We built using the repo
-            Pipeline, created a Snapshot, and the integration service ran
-            Conforma. In the release Pipeline, verification ran before the
-            StepAction restored hello.txt. The negative build still produced
-            signed output, but artifact_pack failed and no unpack TaskRun was
-            created.” Show the build graph, integration TEST_OUTPUT and report
-            logs, then release consume logs. Use the evidence commands if the UI
-            is unavailable. This is a teaching release Pipeline, not a full
-            ReleasePlan deployment.
+
+          <aside class="speaker-notes" hidden>
+            <p>The design change</p>
+            <p>Konflux retains the execution boundary</p>
+
+            <p>
+              Previously, introducing a build step meant providing its logic in
+              a trusted catalog Task. The Task encoded how to build the
+              artifact, so a new tool or format often required catalog work and
+              review.
+            </p>
+            <p>
+              BYOB separates the build logic from its execution envelope. The
+              developer supplies the script and builder image. Konflux supplies
+              run-build or run-build-remote, including the fixed runtime
+              confinement, trusted restore/export steps, and provenance
+              integration.
+            </p>
+            <p>
+              The script belongs to the source cloned for the build. The
+              selected image provides the runtime and tools. Platform review
+              remains necessary for the trusted execution Task, while source
+              review can cover application build logic. The current PoC policy
+              has a single approved builder image, so accepting another image
+              still requires updating that policy.
+            </p>
+            <h3>Sources</h3>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/konflux-ci/architecture/pull/387/files"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >ADR 0073: problem and trust model</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/task/run-build/0.1/run-build.yaml"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Generic trusted run-build Task</a
+                >
+              </li>
+            </ul>
           </aside>
         </section>
 
-        <section class="slide" id="next" aria-labelledby="next-title" hidden>
-          <div class="eyebrow">06 / THE TAKEAWAY</div>
-          <h2 id="next-title">
-            More build freedom.<br /><em>One trust story.</em>
-          </h2>
-          <div class="closing-layout">
-            <div class="closing-message">
+        <section
+          class="slide"
+          id="slide-3"
+          aria-labelledby="title-3"
+          aria-roledescription="slide"
+          aria-label="3 of 7"
+          hidden
+        >
+          <h2 id="title-3">The script comes from the cloned source</h2>
+          <div
+            class="execution-envelope"
+            role="group"
+            aria-label="Trusted run-build Task contains a source script and pinned builder image"
+          >
+            <p class="row-label">Trusted run-build Task</p>
+            <div class="ingredients">
+              <div>
+                <h3>Build script</h3>
+                <code>./build.sh</code>
+                <p>From the SCM checkout</p>
+              </div>
+              <span class="ingredient-plus" aria-hidden="true">+</span>
+              <div>
+                <h3>Builder image</h3>
+                <code>builder@sha256:…</code>
+                <p>Selected in the Pipeline</p>
+              </div>
+            </div>
+            <p class="execution-caption">
+              The Task executes the command in isolation.
+            </p>
+          </div>
+          <p class="quiet-caption">
+            Conforma checks the source-relative command and approved builder
+            digest.
+          </p>
+
+          <aside class="speaker-notes" hidden>
+            <p>User logic, trusted execution</p>
+            <p>PoC parameters: image, build-cmd, build-args</p>
+
+            <p>
+              The default executable is ./build.sh, resolved in /var/source.
+              build-cmd and build-args are arrays passed directly as command and
+              arguments. The builder image must contain the executable's
+              runtime. The script comes from the cloned source, rather than
+              being supplied as an inline Tekton Task step.
+            </p>
+            <p>
+              The Rego command rule checks relative source paths without parent
+              traversal and matches the attested command to a recorded step
+              entryPoint and approved image digest. The builder rule compares
+              the declared image with the policy's approved digest.
+            </p>
+            <p>
+              The fixed Task runs the developer step as UID 1000 with no
+              privilege escalation and dropped capabilities. Trusted steps
+              handle source restoration, registry authentication and output
+              export. The developer step does not mount the registry or Git
+              credential volumes. The service-account example disables token
+              automount. Remote execution uses rootless Podman and keeps the SSH
+              credential in trusted orchestration.
+            </p>
+            <p>
+              These checks support the intended confinement contract. The
+              current Rego policy is not a full immutable-digest verification of
+              all build Task content: it uses cluster Task names for run-build,
+              run-build-remote and pack. Trusted Task identity and safe
+              execution overrides must also be enforced by the platform.
+              Source-path checks establish the recorded contract; protected Task
+              definitions and runtime confinement provide the execution
+              guarantee.
+            </p>
+            <h3>Sources</h3>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/task/run-build/0.1/run-build.yaml"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Script execution and credential separation</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/policy/rules/pipeline.rego#L297-L312"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Conforma command and recorded-step check</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/internal/remote/worker.sh"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Remote runtime confinement</a
+                >
+              </li>
+            </ul>
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="slide-4"
+          aria-labelledby="title-4"
+          aria-roledescription="slide"
+          aria-label="4 of 7"
+          hidden
+        >
+          <h2 id="title-4">Inputs stay within the same Pipeline</h2>
+          <p class="lede">
+            Each build consumes cloned source or artifacts from other build
+            Tasks in that Pipeline.
+          </p>
+          <ol
+            class="flow-track"
+            aria-label="Example chain: source checkout, Build A, Build B, pack"
+          >
+            <li>
+              <h3>SCM checkout</h3>
+              <code>SOURCE_ARTIFACT</code>
+            </li>
+            <li>
+              <h3>Build A</h3>
+              <code>BUILD_ARTIFACT</code>
+            </li>
+            <li>
+              <h3>Build B</h3>
+              <code>BUILD_ARTIFACT</code>
+            </li>
+            <li>
+              <h3>pack</h3>
+              <span>OCI artifact</span>
+            </li>
+          </ol>
+          <p class="single-takeaway">
+            Conforma checks the origin of every build input.
+          </p>
+
+          <aside class="speaker-notes" hidden>
+            <p>Multiple build Tasks</p>
+            <p>Chained and platform-matrix builds share this contract</p>
+
+            <p>
+              A Pipeline can contain multiple run-build or run-build-remote
+              Tasks. Conforma accepts a SOURCE_ARTIFACT input only when it
+              matches the checkout artifact or a BUILD_ARTIFACT from a build
+              Task in the same attestation. Additional BUILD_ARTIFACTS entries
+              must match build results from that same attestation. Foreign
+              inputs are rejected.
+            </p>
+            <p>
+              The diagram shows an example chain, not the only allowed topology.
+              In the supplied byob-chained Pipeline, every build independently
+              restores the original checkout. Build B receives Build A's output
+              separately through BUILD_INPUTS/codegen/out/. The policy also
+              permits a previous same-Pipeline build artifact as
+              SOURCE_ARTIFACT.
+            </p>
+            <p>
+              This differs from the ADR's mutated-source handoff. The PoC
+              exports only validated files written to BUILD_OUTPUT, without
+              automatically forwarding source trees or caches. A chained build
+              must copy any inputs it wants to preserve into its own
+              BUILD_OUTPUT. pack collects selected build outputs into one OCI
+              artifact. Matrix pipelines run builds per platform and preserve
+              platform directories in the final payload.
+            </p>
+            <h3>Sources</h3>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/policy/rules/pipeline.rego#L176-L245"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Conforma source, build-input and pack lineage rules</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/pipelines/byob-chained.yaml"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Actual chained Pipeline</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/pipelines/byob-matrix.yaml"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Platform matrix Pipeline</a
+                >
+              </li>
+            </ul>
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="slide-5"
+          aria-labelledby="title-5"
+          aria-roledescription="slide"
+          aria-label="5 of 7"
+          hidden
+        >
+          <h2 id="title-5">Conforma verifies the build contract</h2>
+          <p class="lede">
+            It verifies Chains signatures, then evaluates the recorded build.
+          </p>
+          <ul class="check-list">
+            <li>
+              <strong>Script</strong> stays at a relative path in the source
+            </li>
+            <li><strong>Builder</strong> matches the approved image digest</li>
+            <li>
+              <strong>Inputs</strong> come from checkout or this Pipeline's
+              builds
+            </li>
+            <li><strong>Output</strong> matches the signed artifact digest</li>
+          </ul>
+
+          <aside class="speaker-notes" hidden>
+            <p>Verification</p>
+            <p>The current PoC policy approves one builder image</p>
+
+            <p>
+              The byob-pipeline-policy integration test calls ec validate image
+              with the Chains public key. Signature and subject verification
+              happen before the BYOB Rego policy evaluates the SLSA v0.2
+              PipelineRun statement. The policy result is returned through
+              TEST_OUTPUT to the integration service.
+            </p>
+            <p>
+              The actual rules also require an approved Pipeline shape,
+              checkout/build/pack Tasks, the pinned checkout bundle, source
+              URL/commit consistency with Git material and checkout results,
+              expected artifact type, and storage consistent with Pipeline
+              parameters. The signature must describe the snapshot image being
+              checked.
+            </p>
+            <p>
+              The rule set currently only approves the pinned Konflux
+              task-runner image. It checks build/pack Task references by name,
+              while immutable Task identity enforcement remains a platform
+              integration obligation. Resource requests and limits may be
+              overridden. Admission must prevent other execution overrides from
+              replacing the reviewed plan or exposing credentials.
+            </p>
+            <p>
+              Conforma verifies signed evidence of the contract. Isolation is
+              implemented by the trusted Task and platform; the Rego policy does
+              not inspect a live cluster or independently prove VM allocation
+              and teardown. Source VSA verification is not part of these current
+              rules.
+            </p>
+            <h3>Sources</h3>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/policy/rules/pipeline.rego"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Implemented Conforma policy</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/examples/integration/byob-pipeline-policy.yaml"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Chains signature verification and integration result</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/README.md#conforma-policy-assumptions"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Admission integration requirements</a
+                >
+              </li>
+            </ul>
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="slide-6"
+          aria-labelledby="title-6"
+          aria-roledescription="slide"
+          aria-label="6 of 7"
+          hidden
+        >
+          <h2 id="title-6">SLSA Build L3: a trusted execution boundary</h2>
+          <div class="principles">
+            <div>
+              <h3>Isolated execution</h3>
               <p>
-                Developers bring the recipe.<br />Konflux keeps the execution
-                contract.<br />Conforma decides what can release.
+                User logic cannot alter platform state or reach signing keys.
               </p>
-              <a
-                class="closing-link"
-                href="https://github.com/konflux-ci/architecture/pull/387"
-                target="_blank"
-                rel="noreferrer"
-                >Discuss ADR 73 <span>↗</span></a
-              >
             </div>
-            <div class="readiness">
-              <span class="label">PROPOSAL ≠ PRODUCTION GUARANTEE</span>
-              <div>
-                <b>Working proof of concept</b>
-                <p>
-                  Build outputs → OCI → signed provenance → integration policy →
-                  release unpacking.
-                </p>
-              </div>
-              <div>
-                <b>Still platform responsibilities</b>
-                <p>
-                  Immutable Task identities, admission enforcement, isolation,
-                  and Source VSA verification.
-                </p>
-              </div>
-              <details>
-                <summary>Implementation differences</summary>
-                <ul>
-                  <li>
-                    Repo: <code>build-cmd</code> + <code>build-args</code>. ADR:
-                    <code>script-path</code>.
-                  </li>
-                  <li>
-                    Local Tasks use namespace names and a development CLI image.
-                  </li>
-                  <li>
-                    Repo policy permits resource overrides; the ADR rejects
-                    <code>taskRunSpecs</code> more broadly.
-                  </li>
-                  <li>
-                    Current policy recognizes the catalog builder image and
-                    output type.
-                  </li>
-                  <li>
-                    Source identity checks do not prove Source L4 review or a
-                    Source VSA.
-                  </li>
-                  <li>
-                    Unpack validates the payload; Conforma is the preceding
-                    signature and policy gate.
-                  </li>
-                </ul>
-              </details>
+            <div>
+              <h3>Unforgeable provenance</h3>
+              <p>Tekton Chains signs outside the build environment.</p>
+            </div>
+            <div>
+              <h3>Verified build contract</h3>
+              <p>Conforma checks the command, builder, and artifact lineage.</p>
             </div>
           </div>
-          <div class="closing-foot">
-            <span>ISOLATION ≠ HERMETICITY</span
-            ><span>BUILD SUCCESS ≠ RELEASE APPROVAL</span
-            ><span>LOCAL DEMO ≠ SLSA CERTIFICATION</span>
-          </div>
-          <aside class="speaker-notes">
-            <b>06:15–07:00 · Close on value and the remaining work.</b> “The
-            value is faster build-tool adoption and a shared trust model. This
-            repo proves the flow, not the full production assurance claim.
-            Production needs approved immutable Tasks, admission controls,
-            correct isolation and Chains configuration, plus separate Source VSA
-            evidence. The proposed direction is more developer freedom inside
-            one platform-owned boundary.”
+          <p class="quiet-caption">
+            Build L3 depends on the platform enforcing this isolation.
+          </p>
+
+          <aside class="speaker-notes" hidden>
+            <p>SLSA Build L3</p>
+            <p>
+              Build L3 requires the trusted Tasks and platform isolation
+              guarantees
+            </p>
+
+            <p>
+              The design allows new build logic without moving the trust
+              boundary into that logic. Build L3's relevant guarantees come from
+              isolated execution and unforgeable, accurate provenance. A trusted
+              generic Task can run developer logic while preserving those
+              guarantees, provided the platform enforces the execution boundary
+              and Conforma verifies the resulting evidence.
+            </p>
+            <p>
+              The cluster must prevent build workloads from mutating
+              TaskRun/PipelineRun status or reading signing keys, and disable
+              token automount on build accounts. The Task separates developer
+              execution from trusted credential-bearing steps. Remote builds
+              require a fresh dedicated VM per TaskRun, destroyed after
+              completion or cancellation. Controller localhost builds need
+              equivalent isolation. Fixed runtime configuration and trusted Task
+              identity must remain protected.
+            </p>
+            <p>
+              The PoC supports those deployment controls but does not establish
+              them all by itself. The current policy checks recorded build
+              evidence and input lineage; platform admission must additionally
+              enforce immutable Task identities and reject unsafe execution
+              overrides. Complete provenance capture, including remote image
+              identity and matrix child builds, depends on the configured Chains
+              deployment.
+            </p>
+            <p>
+              Build L3 does not require hermetic execution. Builds may fetch
+              dependencies. The signed source identity and declared execution
+              parameters still need to describe the actual build accurately.
+              Source-track assurance is separate from Build L3.
+            </p>
+            <h3>Sources</h3>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/README.md#required-platform-integration"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >PoC platform and Chains obligations</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/slsa-framework/slsa/blob/048a3c411b3a892fc41092b6688bbee345b7b386/spec/build-requirements.md#L302-L332"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >SLSA isolation requirements</a
+                >
+              </li>
+            </ul>
           </aside>
         </section>
-      </main>
 
-      <footer class="footer">
-        <div class="slide-counter">
-          <span id="current-number">01</span><span>/ 07</span
-          ><span id="slide-label">THE IDEA</span>
-        </div>
-        <div id="progress-dots" aria-hidden="true">
-          <span class="active"></span><span></span><span></span><span></span
-          ><span></span><span></span><span></span>
-        </div>
-        <div class="navigation">
-          <span class="keyboard-hint">USE ← → TO EXPLORE</span
-          ><button id="previous" aria-label="Previous slide" disabled>←</button
-          ><button id="next-slide" aria-label="Next slide">→</button>
-        </div>
-      </footer>
-    </div>
-    <div id="toast" role="status" aria-live="polite"></div>
+        <section
+          class="slide"
+          id="slide-7"
+          aria-labelledby="title-7"
+          aria-roledescription="slide"
+          aria-label="7 of 7"
+          hidden
+        >
+          <h2 id="title-7">Release BYOB artifacts to your destination</h2>
+          <p class="lede">
+            A release Pipeline runs both steps in the same Task.
+          </p>
+          <ol
+            class="flow-track release-track"
+            aria-label="Two steps in the same release Task: download and extract BYOB artifacts, then publish to the chosen destination"
+          >
+            <li>
+              <h3>1. Download and extract</h3>
+              <p>
+                Use the <code>unpack-build-output</code> StepAction to restore
+                BYOB artifacts.
+              </p>
+            </li>
+            <li>
+              <h3>2. Publish to the release destination</h3>
+              <p>Another step publishes the extracted files.</p>
+            </li>
+          </ol>
+          <p class="single-takeaway">
+            Choose the destination and publishing step for your use case.
+          </p>
+
+          <aside class="speaker-notes" hidden>
+            <p>Release integration</p>
+            <p>
+              A Task in the release Pipeline invokes unpack-build-output in its
+              first step to download and extract the artifacts built by BYOB. A
+              later step in that same Task publishes the extracted files to the
+              release destination. The use case determines the destination and
+              the implementation of the publishing step.
+            </p>
+            <p>
+              Mount a shared volume or workspace in both steps so that the
+              publishing step can read the extraction directory. The PoC
+              supplies the reusable unpack StepAction; the release Task supplies
+              the destination-specific publishing step.
+            </p>
+
+            <p>
+              pack publishes one OCI artifact per PipelineRun. Its artifact type
+              is application/vnd.konflux.build-output.v1 and its only layer is
+              payload.tar.gz, with media type
+              application/vnd.oci.image.layer.v1.tar+gzip. The final manifest
+              digest is the reference downstream consumers use.
+            </p>
+            <p>
+              A release Task can use the unpack-build-output StepAction to
+              download and restore these files. Its image parameter is
+              registry/repo@sha256:manifest-digest. Its destination parameter
+              names an empty writable directory. The StepAction checks the
+              artifact type, expected layer name/media type and downloaded layer
+              digest, then validates and extracts the archive. Chained/task or
+              matrix/platform directories remain in the payload.
+            </p>
+            <p>
+              Install the StepAction in the release Task's namespace or resolve
+              its definition. The release Pipeline continues to reference its
+              own Task, which invokes the StepAction. Registry authentication
+              and trusted CA mounts belong to this trusted release-side
+              consumer. It is not an additional developer-authored build Task or
+              an entry in the BYOB build allowlist.
+            </p>
+            <h3>Sources</h3>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/stepactions/unpack-build-output/0.1/unpack-build-output.yaml"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Release-side unpack-build-output StepAction</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/README.md#unpack"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Release Task usage example</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/gbenhaim/byob-pipeline/blob/ae920259cdb87f111e12f2a10e9e01c01896b874/internal/cli/unpack.go"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Manifest and layer verification</a
+                >
+              </li>
+            </ul>
+            <p>Prepared with AI assistance by Gal's AI assistant.</p>
+          </aside>
+        </section>
+      </div>
+    </main>
+
+    <footer class="controls" aria-label="Presentation controls">
+      <div class="tools">
+        <button class="control" id="overview-button" title="Slide overview (O)">
+          <kbd>O</kbd>Overview</button
+        ><button
+          class="control"
+          id="notes-button"
+          title="Speaker notes and sources (N)"
+        >
+          <kbd>N</kbd>Notes &amp; sources</button
+        ><button class="control" id="fullscreen" title="Toggle full screen (F)">
+          <kbd>F</kbd>Full screen</button
+        ><button
+          class="control"
+          id="print"
+          title="Print or save all slides to PDF (P)"
+        >
+          <kbd>P</kbd>Print
+        </button>
+      </div>
+      <div class="position">
+        <div class="dots" aria-label="Choose a slide"></div>
+        <span id="counter">01 / 07</span>
+      </div>
+      <div class="navigation">
+        <button
+          class="control"
+          id="previous"
+          aria-label="Previous slide"
+          title="Previous slide (Left arrow)"
+        >
+          ←</button
+        ><button
+          class="control next"
+          id="next"
+          aria-label="Next slide"
+          title="Next slide (Right arrow)"
+        >
+          →
+        </button>
+      </div>
+    </footer>
+    <p id="announcement" class="sr-only" aria-live="polite"></p>
+    <dialog id="notes-dialog" aria-labelledby="notes-heading">
+      <div class="dialog-header">
+        <h2 id="notes-heading">Speaker notes &amp; sources</h2>
+        <button class="control" data-close aria-label="Close notes">
+          Close
+        </button>
+      </div>
+      <div id="notes-content"></div>
+    </dialog>
+    <dialog id="overview-dialog" aria-labelledby="overview-heading">
+      <div class="dialog-header">
+        <h2 id="overview-heading">Slide overview</h2>
+        <button class="control" data-close aria-label="Close slide overview">
+          Close
+        </button>
+      </div>
+      <div class="overview-grid"></div>
+    </dialog>
     <noscript
-      ><div class="no-script">
-        This presentation uses JavaScript for slide navigation. Enable
-        JavaScript, or print this page to view every slide.
-      </div></noscript
+      ><style>
+        .slide[hidden] {
+          display: flex !important;
+        }
+        body {
+          overflow: auto;
+        }
+        #stage,
+        #viewport {
+          position: static;
+          transform: none;
+          height: auto;
+        }
+        .controls {
+          display: none;
+        }
+      </style>
+      <p>
+        This presentation uses JavaScript for navigation. All slides appear
+        below when JavaScript is disabled.
+      </p></noscript
     >
+    <script>
+      (() => {
+        const slides = Array.from(document.querySelectorAll(".slide"));
+        const stage = document.getElementById("stage");
+        const viewport = document.getElementById("viewport");
+        const previous = document.getElementById("previous");
+        const next = document.getElementById("next");
+        const counter = document.getElementById("counter");
+        const announcement = document.getElementById("announcement");
+        const notesDialog = document.getElementById("notes-dialog");
+        const overviewDialog = document.getElementById("overview-dialog");
+        const notesContent = document.getElementById("notes-content");
+        let current = 0;
+        let touchStart = null;
+        const number = (index) => String(index + 1).padStart(2, "0");
+        const title = (slide) =>
+          slide.querySelector("h1, h2").textContent.replace(/\s+/g, " ").trim();
+        const dots = slides.map((slide, index) => {
+          const dot = document.createElement("button");
+          dot.className = "dot";
+          dot.setAttribute("aria-label", `Slide ${index + 1}: ${title(slide)}`);
+          dot.title = title(slide);
+          dot.addEventListener("click", () => go(index));
+          document.querySelector(".dots").append(dot);
+          return dot;
+        });
+        const overviewButtons = slides.map((slide, index) => {
+          const button = document.createElement("button");
+          button.className = "overview-slide";
+          const label = document.createElement("span");
+          label.textContent = `SLIDE ${number(index)}`;
+          button.append(label, document.createTextNode(title(slide)));
+          button.addEventListener("click", () => {
+            overviewDialog.close();
+            go(index);
+          });
+          document.querySelector(".overview-grid").append(button);
+          return button;
+        });
+        function fit() {
+          if (window.matchMedia("(max-width: 700px)").matches) {
+            stage.style.transform = "";
+            return;
+          }
+          const scale = Math.min(
+            (viewport.clientWidth - 48) / 1440,
+            (viewport.clientHeight - 8) / 810,
+          );
+          stage.style.transform = `translate(-50%, -50%) scale(${Math.max(0.1, scale)})`;
+        }
+        function go(index, updateHash = true) {
+          current = Math.max(0, Math.min(slides.length - 1, index));
+          slides.forEach((slide, i) => {
+            slide.hidden = i !== current;
+          });
+          [dots, overviewButtons].forEach((buttons) =>
+            buttons.forEach((button, i) => {
+              if (i === current) button.setAttribute("aria-current", "step");
+              else button.removeAttribute("aria-current");
+            }),
+          );
+          previous.disabled = current === 0;
+          next.disabled = current === slides.length - 1;
+          counter.textContent = `${number(current)} / ${String(slides.length).padStart(2, "0")}`;
+          announcement.textContent = `Slide ${current + 1} of ${slides.length}: ${title(slides[current])}`;
+          document.title = `${title(slides[current])} · Konflux ADR 0073`;
+          if (updateHash) history.replaceState(null, "", `#${current + 1}`);
+          if (notesDialog.open) renderNotes();
+          if (window.matchMedia("(max-width: 700px)").matches)
+            window.scrollTo({ top: 0, behavior: "instant" });
+        }
+        function fromHash() {
+          const raw = location.hash.slice(1);
+          const index = /^\d+$/.test(raw) ? Number(raw) - 1 : 0;
+          go(Number.isFinite(index) ? index : 0, false);
+        }
+        function renderNotes() {
+          notesContent.replaceChildren(
+            ...Array.from(
+              slides[current].querySelector(".speaker-notes").children,
+              (node) => node.cloneNode(true),
+            ),
+          );
+          document.getElementById("notes-heading").textContent =
+            `Slide ${current + 1}: Notes & sources`;
+        }
+        function openNotes() {
+          renderNotes();
+          notesDialog.showModal();
+        }
+        async function fullscreen() {
+          try {
+            if (document.fullscreenElement) await document.exitFullscreen();
+            else if (document.documentElement.requestFullscreen)
+              await document.documentElement.requestFullscreen();
+          } catch {
+            announcement.textContent =
+              "Full screen is unavailable in this browser. You can use the browser full-screen command.";
+          }
+        }
+        previous.addEventListener("click", () => go(current - 1));
+        next.addEventListener("click", () => go(current + 1));
+        document
+          .getElementById("notes-button")
+          .addEventListener("click", openNotes);
+        document
+          .getElementById("overview-button")
+          .addEventListener("click", () => overviewDialog.showModal());
+        document
+          .getElementById("fullscreen")
+          .addEventListener("click", fullscreen);
+        document
+          .getElementById("print")
+          .addEventListener("click", () => window.print());
+        document
+          .querySelectorAll("[data-close]")
+          .forEach((button) =>
+            button.addEventListener("click", () =>
+              button.closest("dialog").close(),
+            ),
+          );
+        document.querySelectorAll("dialog").forEach((dialog) =>
+          dialog.addEventListener("click", (event) => {
+            if (event.target === dialog) {
+              const rect = dialog.getBoundingClientRect();
+              if (
+                event.clientX < rect.left ||
+                event.clientX > rect.right ||
+                event.clientY < rect.top ||
+                event.clientY > rect.bottom
+              )
+                dialog.close();
+            }
+          }),
+        );
+        document.addEventListener("keydown", (event) => {
+          if (
+            event.ctrlKey ||
+            event.metaKey ||
+            event.altKey ||
+            document.querySelector("dialog[open]") ||
+            (/^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(event.target.tagName) &&
+              [" ", "Enter"].includes(event.key))
+          )
+            return;
+          const key = event.key.toLowerCase();
+          if (["arrowright", "arrowdown", "pagedown", " "].includes(key)) {
+            event.preventDefault();
+            go(current + 1);
+          } else if (["arrowleft", "arrowup", "pageup"].includes(key)) {
+            event.preventDefault();
+            go(current - 1);
+          } else if (key === "home") {
+            event.preventDefault();
+            go(0);
+          } else if (key === "end") {
+            event.preventDefault();
+            go(slides.length - 1);
+          } else if (key === "n") openNotes();
+          else if (key === "o") overviewDialog.showModal();
+          else if (key === "f") fullscreen();
+          else if (key === "p") {
+            event.preventDefault();
+            window.print();
+          }
+        });
+        viewport.addEventListener(
+          "touchstart",
+          (event) => {
+            if (event.touches.length === 1)
+              touchStart = {
+                x: event.touches[0].clientX,
+                y: event.touches[0].clientY,
+              };
+          },
+          { passive: true },
+        );
+        viewport.addEventListener(
+          "touchend",
+          (event) => {
+            if (!touchStart || !event.changedTouches.length) return;
+            const dx = event.changedTouches[0].clientX - touchStart.x;
+            const dy = event.changedTouches[0].clientY - touchStart.y;
+            if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5)
+              go(current + (dx < 0 ? 1 : -1));
+            touchStart = null;
+          },
+          { passive: true },
+        );
+        window.addEventListener("hashchange", fromHash);
+        window.addEventListener("resize", fit);
+        document.addEventListener("fullscreenchange", fit);
+        fromHash();
+        fit();
+      })();
+    </script>
   </body>
 </html>

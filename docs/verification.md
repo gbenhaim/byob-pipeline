@@ -1,6 +1,30 @@
 # Verification
 
-## 2026-11-05: presentation and local Kind demo
+## User-selected ADR 0073 presentation
+
+At the user's request, `docs/presentation/index.html` is a verbatim copy of
+the architecture worktree's `0073-bring-your-own-build-logic.html`. The original
+separate stylesheet and browser script were removed. The runbook and timed
+narration now follow the selected deck's seven slides and a separate Konflux UI
+walkthrough.
+
+- `cmp` confirmed the copied HTML matches the selected source byte for byte.
+- `make check`, Prettier, inline JavaScript and local-server syntax checks,
+  and whitespace checks passed.
+- Headless Chrome verified all seven slides, keyboard/button navigation,
+  overview, notes and source links, deep links, print visibility, 28 responsive
+  layouts, and opening the copied file directly from disk. The deck made no
+  external requests and reported no browser errors.
+- HTTP checks confirmed the server returns the unchanged HTML, supports HEAD,
+  and refuses obsolete asset routes, repository metadata, and POST requests.
+
+The Kind demo was not rerun for this presentation replacement. The earlier
+cluster results below remain the recorded evidence for the companion demo.
+
+## 2026-11-05: initial presentation and local Kind demo
+
+The browser checks in this section describe the original presentation before
+the user selected the replacement deck above.
 
 Added a seven-minute local presentation and an orchestrated demo using the
 existing build catalog, Conforma IntegrationTestScenario, and unpack StepAction.

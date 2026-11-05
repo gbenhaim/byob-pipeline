@@ -13,14 +13,16 @@ From the repository root, with Node.js 20+:
 make presentation
 ```
 
-Open <http://127.0.0.1:4173>. Use the outline or arrow keys to move, `N` for
-notes, and `F` for fullscreen. Each slide has its own URL. Print the page to
-print all seven slides. If the port is busy, use `PORT=4174 make presentation`.
+Open <http://127.0.0.1:4173>. Use arrow keys to move, `O` for the overview,
+`N` for notes and sources, `F` for fullscreen, and `P` to print all seven
+slides. Each slide has a numbered URL, such as `/#5` for Conforma. If the
+port is busy, use `PORT=4174 make presentation`.
 
-You can also open `docs/presentation/index.html` directly. Fonts, scripts,
-styles, diagrams, and speaker notes are local. Copy and fullscreen depend on
-browser permissions; a manual-copy fallback is provided. External source
-links need internet access. The website never accesses your cluster.
+The deck is the user-selected `0073-bring-your-own-build-logic.html` from the
+architecture PR worktree, copied unchanged to `docs/presentation/index.html`.
+You can also open that file directly. Its logo, styles, JavaScript, diagrams,
+and speaker notes are embedded, so the presentation works offline. External
+source links need internet access. The website never accesses your cluster.
 
 Read the [timed presenter script](presenter-script.md). The seven-minute slot
 includes a **prepared walkthrough in the Konflux UI**, not cluster installation or
@@ -137,8 +139,9 @@ types together. The demo release appears here as a Tekton PipelineRun; it
 does not create a Release resource in the separate Releases view. No Component
 onboarding is needed for this application activity walkthrough.
 
-The website's **Open Konflux UI** link opens the local UI; `demo.sh ui`
-provides the exact workspace/run URLs for your selected namespace.
+Keep Konflux UI in a separate browser tab; `demo.sh ui` provides the exact
+workspace/run URLs for your selected namespace. Slide 7 explains the release
+consumer pattern. Switch to the UI after that slide for the prepared demo.
 
 ## Rehearsal settings
 
@@ -204,7 +207,8 @@ bash scripts/demo.sh evidence reject
 
 These commands read saved PipelineRun JSON and logs without a cluster or
 network connection. Explain that they are retained results from your rehearsal.
-The page's policy cases are explanatory examples, not recorded results.
+The presentation's diagrams explain the architecture; the UI and retained
+evidence show the actual rehearsal results.
 
 ## Inspect or troubleshoot
 

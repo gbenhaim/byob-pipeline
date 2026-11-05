@@ -4,6 +4,12 @@
 
 **Goal:** Deliver a seven-minute interactive presentation for developers and managers, plus a real Kind build / Conforma / release-unpack demo.
 
+**Slide replacement:** At the user's request, the shipped deck is now a verbatim
+copy of the architecture worktree's `0073-bring-your-own-build-logic.html` in
+`docs/presentation/index.html`. It embeds its own CSS and JavaScript. The original
+slide-design tasks below are historical; the separate `styles.css` and `app.js`
+were removed. The demo remains, and the narration follows the selected slides.
+
 **Architecture:** Static HTML/CSS/JavaScript slides served locally with Node built-ins. Bash orchestrates the existing Tekton catalog and integration scenario. A demo release Pipeline reuses the integration validator before invoking the existing StepAction.
 
 **Tech Stack:** Browser JavaScript, Node.js, Bash, jq, Kubernetes/Tekton YAML, existing Go/Ginkgo validation.

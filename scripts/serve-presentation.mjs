@@ -7,8 +7,6 @@ const root = new URL("../docs/presentation/", import.meta.url);
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
-  ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
-  ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   [
     "/presenter-script.md",
     ["presenter-script.md", "text/plain; charset=utf-8"],
