@@ -2,6 +2,20 @@
 
 A Tekton catalog for the build portion of [ADR 73](https://github.com/konflux-ci/architecture/pull/387). It checks out an exact source revision, runs a configured build command, and publishes the contents of `$BUILD_OUTPUT` as an OCI artifact. Trusted Tasks use the PoC Go CLI; the developer image only needs the build executable and its runtime.
 
+## Presentation and local demo
+
+Run `make presentation` and open <http://127.0.0.1:4173> for a seven-minute
+interactive presentation for developers and managers. It uses the selected
+ADR 73 deck, with diagrams, keyboard navigation, an overview, and speaker notes.
+
+The [demo runbook](docs/presentation/README.md) and
+[presenter script](docs/presentation/presenter-script.md) cover a real
+Konflux-on-Kind run of `pipelines/byob.yaml`, Conforma integration testing,
+and `unpack-build-output` in a gated release Pipeline, including a rejected
+artifact. Rehearse with `bash scripts/demo.sh all`; show the prepared runs in
+Konflux UI using links from `bash scripts/demo.sh ui`. Replay retained results
+offline with `bash scripts/demo.sh evidence STAGE`.
+
 ## Pipelines
 
 - **`byob`** — checkout, build locally, package.
@@ -163,7 +177,8 @@ files.
 
 ### Catalog checks
 
-`make check` does not use a cluster. It needs Go 1.27 and ShellCheck. It runs
+`make check` does not use a cluster. It needs Go 1.27, ShellCheck, Bash, and
+`jq` (for the demo manifest renderer tests). It runs
 the Go tests, `gofmt`, `go vet`, ShellCheck, a check that the generated remote
 Task matches its source, and Tekton admission validation of the Tasks,
 StepAction, Pipelines, PipelineRun examples, and the policy Pipeline.

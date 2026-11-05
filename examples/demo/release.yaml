@@ -1,0 +1,93 @@
+# Teaching example: a Tekton release Pipeline, not a ReleasePlan deployment.
+# byob-demo-verify is generated from the existing integration validator.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: byob-demo-release
+spec:
+  description: Verify the immutable build output before a release Task consumes it.
+  params:
+  - name: image
+    type: string
+    description: Untagged registry/repository@sha256 manifest reference.
+  results:
+  - name: TEST_OUTPUT
+    value: $(tasks.verify.results.TEST_OUTPUT)
+  - name: RELEASED_FILE
+    value: $(tasks.unpack.results.RELEASED_FILE)
+  tasks:
+  - name: verify
+    taskRef:
+      name: byob-demo-verify
+    params:
+    - name: SNAPSHOT
+      value: '{"components":[{"name":"byob","containerImage":"$(params.image)"}]}'
+  - name: unpack
+    runAfter: [verify]
+    taskSpec:
+      results:
+      - name: RELEASED_FILE
+        value: $(steps.consume.results.RELEASED_FILE)
+      stepTemplate:
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: work
+          mountPath: /var/workdir
+        - name: registry-auth
+          mountPath: /var/run/byob-registry-auth
+          readOnly: true
+        - name: trusted-ca
+          mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          subPath: ca-bundle.crt
+          readOnly: true
+      steps:
+      - name: unpack
+        ref:
+          name: unpack-build-output
+        params:
+        - name: image
+          value: $(params.image)
+        - name: destination
+          value: /var/workdir/output
+      - name: consume
+        image: localhost/byob-cli:devel
+        imagePullPolicy: IfNotPresent
+        command: [/bin/sh, -c]
+        args:
+        - |
+          set -eu
+          test -s /var/workdir/output/hello.txt
+          printf 'Unpacked artifact files:\n'
+          (cd /var/workdir/output && find . -type f -print)
+          printf '\nRelease Task consumed the verified artifact:\n'
+          printf '%s\n' '--- hello.txt ---'
+          cat /var/workdir/output/hello.txt
+          printf '\n%s\n' '--- end hello.txt ---'
+          cp /var/workdir/output/hello.txt "$(step.results.RELEASED_FILE.path)"
+        results:
+        - name: RELEASED_FILE
+          type: string
+      volumes:
+      - name: work
+        emptyDir: {}
+      - name: registry-auth
+        secret:
+          secretName: byob-registry-auth
+          optional: true
+          items:
+          - key: .dockerconfigjson
+            path: config.json
+      - name: trusted-ca
+        configMap:
+          name: trusted-ca
+          items:
+          - key: ca-bundle.crt
+            path: ca-bundle.crt
