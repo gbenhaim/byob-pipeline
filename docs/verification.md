@@ -1,5 +1,77 @@
 # Verification
 
+## 2026-11-05: presentation and local Kind demo
+
+Added a seven-minute local presentation and an orchestrated demo using the
+existing build catalog, Conforma IntegrationTestScenario, and unpack StepAction.
+
+Verification performed for this change:
+
+- `make check` passed: Go tests, Go formatting/vet, ShellCheck (including the
+  demo script), generated Task drift checks, and Tekton admission validation.
+  Existing HTTP fixture tests required execution outside the sandbox because
+  the sandbox prevents binding local test-server sockets.
+- Go/Ginkgo demo tests exercise real rendered resources, exact source identity,
+  immutable digest validation, release-gate dependencies, and conversion of
+  Tekton's defaulted inline validator into a standalone Task.
+- The generated validator Task also passed the catalog's Tekton admission
+  validator. The release example is included in `make validate`.
+- Browser JavaScript syntax and Prettier formatting passed. Headless Chrome
+  exercised all seven slides, deep links, keyboard navigation and focus,
+  interactive build stages, policy cases, notes, clipboard, print visibility,
+  390-pixel layouts, and opening the presentation directly from disk.
+  Desktop and mobile screenshots were visually inspected.
+- Independent review identified default Make target, cross-context preparation,
+  and skip-link navigation regressions. Each was reproduced and fixed with
+  a failing-then-passing behavior check. Final `make check` and browser QA
+  passed after the fixes. A complete `demo.sh all` rehearsal exited zero;
+  repeat preparation on the original context also succeeded.
+- Built and loaded the CLI image, then rehearsed in the isolated
+  `byob-demo-presentation` namespace on the existing `kind-konflux` cluster.
+  The original `byob` Pipeline completed checkout, build, and pack, and Chains
+  signed its OCI output. The actual IntegrationTestScenario returned
+  `TEST_OUTPUT.result=SUCCESS`, with 18 successes, zero failures, and zero
+  warnings. The release Pipeline revalidated that digest, invoked
+  `unpack-build-output`, and consumed `hello.txt` containing `Built on x86_64`.
+- A separate Pipeline variant with an unsupported artifact type completed and
+  was signed. The scenario returned `FAILURE`, with `policy.artifact_pack`
+  and an additional `policy.pipeline_name` violation for the variant's name.
+  The release verifier failed and **no unpack TaskRun was created**.
+
+Actual PipelineRun JSON, logs, and run identities are retained locally in
+`dist/demo/byob-demo-presentation/` (ignored by Git). Replay them with
+`BYOB_NAMESPACE=byob-demo-presentation bash scripts/demo.sh evidence STAGE`.
+No external release destination, ReleasePlan, Source VSA validation, remote
+VM lifecycle, or production admission configuration was exercised. These
+results do not establish SLSA certification.
+
+The Konflux UI follow-up was verified against the same rehearsal namespace:
+
+- `make lint`, `go test ./tests -count=1` with the project Go cache, Bash syntax,
+  Prettier, and whitespace checks passed. New behavior tests cover UI labels,
+  the configured user viewer binding, ownership checks, context isolation, and
+  upgrading recorded runs without starting workloads.
+- The namespace-lister API returned `byob-demo-presentation` for
+  `user1@konflux.dev`. Kubernetes impersonation confirmed read access to all
+  12 application PipelineRuns (four each of build, test, and release), logs,
+  and namespace metadata, with no Secret access.
+- Before/after comparisons confirmed existing PipelineRun specs and statuses
+  were unchanged. Updated build/release manifests and the viewer binding
+  passed server-side dry-run admission. The UI activity URL returned HTTP 200.
+- Interactive visual verification of the Konflux UI was unavailable because
+  the browser access host was unavailable. Namespace discovery and data
+  permissions were verified through the APIs; the runbook provides direct
+  run links and the presenter script follows the UI walkthrough.
+
+The unpack logging follow-up passed `make lint validate`, the catalog Go tests,
+Prettier, whitespace checks, and server-side dry-run admission. A fresh release
+PipelineRun, `byob-demo-1793890681-30211-release`, completed both Tasks with
+Conforma reporting 18 successes and zero failures/warnings. Its `consume`
+step logs list `./hello.txt` and print `Built on x86_64` between filename
+markers. This verifies the output shown in the presenter walkthrough.
+
+## Earlier Go CLI verification
+
 The results below describe the previous Go CLI revision, before the Podman smoke
 test removal and readability refactor. For this change, `gofmt` and
 `git diff --check` were run; the Go suite and catalog checks were not rerun.

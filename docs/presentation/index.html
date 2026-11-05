@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111919" />
+    <meta
+      name="description"
+      content="A seven-minute interactive introduction to Konflux bring-your-own-build: the problem, the trust boundary, and a real Kind demo."
+    />
+    <title>BYOB — Your build. Our trust boundary.</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#slide-content">Skip to presentation</a>
+    <aside class="rail" aria-label="Presentation outline">
+      <a class="brand" href="#intro" aria-label="BYOB presentation home">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <path
+            d="M16 2 29 9.5v13L16 30 3 22.5v-13Z M3 9.5 16 17l13-7.5 M16 17v13 M9.5 5.75l13 7.5"
+          />
+        </svg>
+        <span
+          >konflux<span class="brand-sub">BUILD / TRUST / RELEASE</span></span
+        >
+      </a>
+      <div class="rail-heading">ARCHITECTURE BRIEFING <span>07 MIN</span></div>
+      <nav id="outline" aria-label="Slides">
+        <a href="#intro" aria-current="step"
+          ><span>01</span>The idea <i>00:00</i></a
+        >
+        <a href="#problem"><span>02</span>The friction <i>00:35</i></a>
+        <a href="#boundary"><span>03</span>The boundary <i>01:15</i></a>
+        <a href="#pipeline"><span>04</span>The implementation <i>02:10</i></a>
+        <a href="#policy"><span>05</span>The release gate <i>03:10</i></a>
+        <a href="#demo"><span>06</span>Show it working <i>04:00</i></a>
+        <a href="#next"><span>07</span>The takeaway <i>06:15</i></a>
+      </nav>
+      <div class="rail-bottom">
+        <span class="status-dot"></span> ADR 73 · PROPOSED
+        <a
+          href="https://github.com/konflux-ci/architecture/pull/387"
+          target="_blank"
+          rel="noreferrer"
+          >Read the proposal <span>↗</span></a
+        >
+        <a href="presenter-script.md" target="_blank"
+          >Presenter script <span>↗</span></a
+        >
+        <span class="credit">Prepared with AI assistance</span>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <span class="breadcrumb">KONFLUX <b>/</b> BRING YOUR OWN BUILD</span>
+        <div class="toolbar">
+          <button
+            id="notes-toggle"
+            aria-pressed="false"
+            title="Speaker notes (N)"
+          >
+            Notes <kbd>N</kbd>
+          </button>
+          <button id="fullscreen-toggle" title="Fullscreen (F)">
+            Present <span aria-hidden="true">⛶</span>
+          </button>
+        </div>
+      </header>
+
+      <main id="slide-content" tabindex="-1">
+        <section class="slide hero" id="intro" aria-labelledby="intro-title">
+          <div class="eyebrow">
+            <span class="small-rule"></span> A SMALL CONTRACT. A BIGGER
+            POSSIBILITY.
+          </div>
+          <div class="hero-layout">
+            <div>
+              <h1 id="intro-title">
+                Your build.<br /><em
+                  >Our trust<br class="desktop-break" />
+                  boundary.</em
+                >
+              </h1>
+              <p class="lede">
+                Bring your own build logic to Konflux.<br />Keep the platform in
+                charge of trust.
+              </p>
+              <div class="hero-meta">
+                <span>ADR 73</span><span>DEVELOPERS + MANAGERS</span
+                ><span>7 MINUTES</span>
+              </div>
+            </div>
+            <div
+              class="hero-architecture"
+              aria-label="Platform-owned checkout and packaging surround developer-owned build logic"
+            >
+              <div class="architecture-caption">
+                <span class="status-dot"></span> ONE SHARED BUILD PLATFORM
+              </div>
+              <div class="architecture-node">
+                <span class="node-index">01</span>
+                <div>Checkout<small>Exact source revision</small></div>
+                <span class="owner">PLATFORM</span>
+              </div>
+              <div class="connector"><span>Trusted Artifact</span></div>
+              <div class="architecture-node developer-node">
+                <span class="node-index">02</span>
+                <div>Your build<small>Image + reviewed command</small></div>
+                <span class="owner">DEVELOPER</span>
+              </div>
+              <div class="connector"><span>Build outputs only</span></div>
+              <div class="architecture-node">
+                <span class="node-index">03</span>
+                <div>
+                  Pack &amp; attest<small>OCI output + signed provenance</small>
+                </div>
+                <span class="owner">PLATFORM</span>
+              </div>
+              <div class="architecture-foot">
+                Flexibility inside a fixed execution boundary.
+              </div>
+            </div>
+          </div>
+          <div class="thesis-strip">
+            <span>THE PROPOSAL</span>
+            <p>A new build tool shouldn’t require a new build platform.</p>
+            <span aria-hidden="true">↗</span>
+          </div>
+          <aside class="speaker-notes">
+            <b>00:00–00:35 · Open with the outcome.</b> “A team wants to build a
+            wheel, a binary, or a new artifact. The interesting question is not
+            whether Tekton can run it. It is whether Konflux can still explain
+            and trust what produced it. BYOB separates the build logic from the
+            platform’s trust boundary.”
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="problem"
+          aria-labelledby="problem-title"
+          hidden
+        >
+          <div class="eyebrow">01 / THE PROBLEM</div>
+          <h2 id="problem-title">
+            A new tool.<br /><em>Two expensive detours.</em>
+          </h2>
+          <p class="section-lede">
+            “We just want to build something the catalog doesn’t support yet.”
+          </p>
+          <div class="detours">
+            <article class="detour">
+              <span class="large-index">A</span>
+              <div>
+                <h3>Extend the shared catalog</h3>
+                <div class="journey">
+                  <span>New Task + Pipeline</span><b>→</b
+                  ><span>Platform review</span><b>→</b
+                  ><span>Catalog release</span>
+                </div>
+                <p>Build-tool adoption waits on platform changes.</p>
+              </div>
+              <span class="detour-label">SHARED WORK</span>
+            </article>
+            <article class="detour">
+              <span class="large-index">B</span>
+              <div>
+                <h3>Write a custom Pipeline</h3>
+                <div class="journey">
+                  <span>Custom build</span><b>→</b><span>Custom policy</span
+                  ><b>→</b><span>Policy approval</span>
+                </div>
+                <p>
+                  A build that runs still needs a path through the release gate.
+                </p>
+              </div>
+              <span class="detour-label">REPEATED WORK</span>
+            </article>
+          </div>
+          <div class="takeaway">
+            <span class="label">THE COST</span>
+            <p>
+              Teams solve build logic <strong>and</strong> rebuild the trust
+              story.
+            </p>
+          </div>
+          <a class="source" data-source="adr"
+            >Source: ADR 73 · Context and Goals ↗</a
+          >
+          <aside class="speaker-notes">
+            <b>00:35–01:15 · Explain the cost without invented metrics.</b>
+            “Today there are two paths. Add shared catalog machinery and wait
+            for platform review, or write your own Pipeline and then get a
+            matching release policy approved. Neither scales well when every
+            team brings a new tool. We want teams to own their builds without
+            each team becoming a build-platform maintainer.”
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="boundary"
+          aria-labelledby="boundary-title"
+          hidden
+        >
+          <div class="eyebrow">02 / THE DECISION</div>
+          <h2 id="boundary-title">
+            Move the flexibility.<br /><em>Keep the boundary.</em>
+          </h2>
+          <p class="section-lede">
+            Developers provide the recipe. Konflux owns how that recipe
+            executes.
+          </p>
+          <div class="boundary-layout">
+            <div class="boundary-panel developer-panel">
+              <div class="panel-label">
+                DEVELOPER OWNED <span>EDITABLE</span>
+              </div>
+              <h3>The recipe</h3>
+              <button
+                class="boundary-item active"
+                data-boundary="image"
+                aria-pressed="true"
+              >
+                <span>01</span>Build image<b>↗</b></button
+              ><button
+                class="boundary-item"
+                data-boundary="command"
+                aria-pressed="false"
+              >
+                <span>02</span>Reviewed build command<b>↗</b></button
+              ><button
+                class="boundary-item"
+                data-boundary="outputs"
+                aria-pressed="false"
+              >
+                <span>03</span>Declared outputs<b>↗</b>
+              </button>
+              <p>Ordinary source review covers the build logic.</p>
+            </div>
+            <div class="boundary-panel platform-panel">
+              <div class="panel-label">KONFLUX OWNED <span>FIXED</span></div>
+              <h3>The execution envelope</h3>
+              <div class="platform-list">
+                <span>Checkout + trusted Tasks</span
+                ><span>Isolated execution + credentials</span
+                ><span>Packaging + signed provenance</span
+                ><span>Admission + release policy</span>
+              </div>
+              <p>Build workloads cannot access the signing key.</p>
+            </div>
+          </div>
+          <div class="detail-line" id="boundary-detail" aria-live="polite">
+            <span class="label">BUILD IMAGE</span>
+            <p>
+              A digest-pinned image supplies the toolchain. The current demo
+              policy recognizes the catalog’s task-runner image.
+            </p>
+          </div>
+          <a class="source" data-source="adr"
+            >Source: ADR 73 · Trust model ↗</a
+          >
+          <aside class="speaker-notes">
+            <b>01:15–02:10 · One boundary, two owners.</b> “The developer owns
+            an image and a source-controlled command. Konflux owns checkout,
+            fixed Tasks, credentials, output packaging, and provenance. The
+            developer does not author a Task or choose a ServiceAccount. Click
+            the command to show the actual argv contract. Builds may fetch
+            dependencies: isolation and hermeticity are separate. Production
+            also needs admission controls for influences the release predicate
+            does not show.”
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="pipeline"
+          aria-labelledby="pipeline-title"
+          hidden
+        >
+          <div class="eyebrow">03 / THE IMPLEMENTATION</div>
+          <h2 id="pipeline-title">
+            Three Tasks.<br /><em>One traceable handoff.</em>
+          </h2>
+          <div class="file-caption">
+            <span class="file-icon">{ }</span><code>pipelines/byob.yaml</code
+            ><span>CLICK A STAGE TO INSPECT</span>
+          </div>
+          <div
+            class="pipeline-flow"
+            role="group"
+            aria-label="Inspect the build stages"
+          >
+            <button
+              class="flow-node active"
+              data-stage="checkout"
+              aria-pressed="true"
+            >
+              <span>01 / TRUSTED</span><b>checkout</b
+              ><small>Source @ commit</small>
+            </button>
+            <div class="flow-arrow">→<small>SOURCE_ARTIFACT</small></div>
+            <button class="flow-node" data-stage="build" aria-pressed="false">
+              <span>02 / CONFINED</span><b>run-build</b
+              ><small>Image + command</small>
+            </button>
+            <div class="flow-arrow">→<small>BUILD_ARTIFACT</small></div>
+            <button class="flow-node" data-stage="pack" aria-pressed="false">
+              <span>03 / TRUSTED</span><b>pack</b
+              ><small>OCI build output</small>
+            </button>
+            <div class="flow-arrow short">→</div>
+            <button
+              class="flow-node chains-node"
+              data-stage="chains"
+              aria-pressed="false"
+            >
+              <span>PLATFORM SERVICE</span><b>Chains</b
+              ><small>Sign provenance</small>
+            </button>
+          </div>
+          <div class="inspector">
+            <div>
+              <span class="label" id="stage-label"
+                >CHECKOUT / EXACT SOURCE</span
+              >
+              <h3 id="stage-title">Start with an immutable revision.</h3>
+              <p id="stage-description">
+                The pinned git-clone bundle checks out the requested commit and
+                exports a Trusted Artifact. Git credentials, when used, are
+                mapped only to checkout.
+              </p>
+              <a class="source" id="stage-source" data-source="pipeline"
+                >Open source ↗</a
+              >
+            </div>
+            <div class="code-window">
+              <div class="code-caption">
+                <span></span><span id="code-filename">pipelines/byob.yaml</span
+                ><span>READ FROM REPO</span>
+              </div>
+              <pre><code id="stage-code">- name: revision
+  value: $(params.revision)
+
+SOURCE_ARTIFACT
+CHAINS-GIT_URL
+CHAINS-GIT_COMMIT</code></pre>
+            </div>
+          </div>
+          <div class="variant-line">
+            <span>ALSO IMPLEMENTED</span><span>Chained builds</span
+            ><span>Platform matrix</span><span>Remote build Task</span>
+          </div>
+          <aside class="speaker-notes">
+            <b>02:10–03:10 · Click Build, then Pack.</b> “This is the actual
+            repository Pipeline. Checkout emits SOURCE_ARTIFACT. The build image
+            runs ./build.sh and writes only to BUILD_OUTPUT. The trusted export
+            step publishes those outputs. Pack produces one OCI artifact and the
+            final IMAGE_URL and IMAGE_DIGEST. Chains, a separate platform
+            service, signs the provenance. Additional Pipelines demonstrate
+            chained, matrix, and remote builds; this demo uses the in-cluster
+            path.”
+          </aside>
+        </section>
+
+        <section
+          class="slide"
+          id="policy"
+          aria-labelledby="policy-title"
+          hidden
+        >
+          <div class="eyebrow">04 / THE RELEASE GATE</div>
+          <h2 id="policy-title">
+            “It built” isn’t<br /><em>“it can release.”</em>
+          </h2>
+          <p class="section-lede">
+            Conforma verifies the signed evidence for the artifact’s exact
+            digest.
+          </p>
+          <div class="gate-flow">
+            <span>Artifact @ digest</span><b>→</b
+            ><span>Signature + subject</span><b>→</b><span>BYOB policy</span
+            ><b>→</b><span id="gate-last">Release consumption</span>
+          </div>
+          <div class="policy-layout">
+            <div
+              class="policy-cases"
+              role="group"
+              aria-label="Explore explanatory policy outcomes"
+            >
+              <span class="label">TRY A CASE</span
+              ><button class="case active" data-case="good" aria-pressed="true">
+                <span class="case-dot"></span>Expected build<small
+                  >Signed, connected outputs</small
+                ><b>↗</b></button
+              ><button class="case" data-case="format" aria-pressed="false">
+                <span class="case-dot"></span>Wrong artifact type<small
+                  >Build succeeds; contract changes</small
+                ><b>↗</b></button
+              ><button class="case" data-case="foreign" aria-pressed="false">
+                <span class="case-dot"></span>Foreign build input<small
+                  >Artifact from a different run</small
+                ><b>↗</b></button
+              ><button class="case" data-case="unsigned" aria-pressed="false">
+                <span class="case-dot"></span>Unsigned artifact<small
+                  >Missing trusted signature</small
+                ><b>↗</b>
+              </button>
+            </div>
+            <div class="policy-result" id="policy-result" aria-live="polite">
+              <div class="result-caption">
+                EXPLANATORY EXAMPLE · NOT LIVE CLUSTER OUTPUT
+              </div>
+              <div class="result-status" id="result-status">ALLOW</div>
+              <code id="result-code">TEST_OUTPUT.result = SUCCESS</code>
+              <p id="result-description">
+                The signed subject, source identity, approved builder, Task
+                shape, and artifact wiring satisfy the current policy.
+              </p>
+              <div class="result-footer" id="result-footer">
+                The release Task may consume this digest.
+              </div>
+            </div>
+          </div>
+          <a class="source" data-source="policy"
+            >Source: policy/rules/pipeline.rego + existing integration scenario
+            ↗</a
+          >
+          <aside class="speaker-notes">
+            <b>03:10–04:00 · Click Wrong artifact type.</b> “A signature says
+            who produced the evidence; it does not say that the build followed
+            the policy. Conforma first checks signatures and the subject digest,
+            then examines the recorded build. Here a build can finish
+            successfully and still fail artifact_pack. The integration scenario
+            publishes TEST_OUTPUT. The release example repeats that same
+            validator before unpacking.”
+          </aside>
+        </section>
+
+        <section class="slide" id="demo" aria-labelledby="demo-title" hidden>
+          <div class="eyebrow">
+            05 / THE LIVE DEMO
+            <span class="live-label">LOCAL KIND · REAL PIPELINERUNS</span>
+          </div>
+          <h2 id="demo-title">
+            Build it. Check it.<br /><em>Then unpack it.</em>
+          </h2>
+          <div class="demo-layout">
+            <div class="demo-stages" role="group" aria-label="Demo commands">
+              <button
+                class="demo-stage active"
+                data-demo="build"
+                aria-pressed="true"
+              >
+                <span>01</span>
+                <div>
+                  <b>Run byob.yaml</b
+                  ><small>Checkout → build → pack → Chains</small>
+                </div>
+                <span>↗</span></button
+              ><button
+                class="demo-stage"
+                data-demo="verify"
+                aria-pressed="false"
+              >
+                <span>02</span>
+                <div>
+                  <b>Trigger integration test</b
+                  ><small>Snapshot → scenario → Conforma</small>
+                </div>
+                <span>↗</span></button
+              ><button
+                class="demo-stage"
+                data-demo="release"
+                aria-pressed="false"
+              >
+                <span>03</span>
+                <div>
+                  <b>Consume in a release Pipeline</b
+                  ><small>Verify → unpack-build-output → hello.txt</small>
+                </div>
+                <span>↗</span></button
+              ><button
+                class="demo-stage"
+                data-demo="reject"
+                aria-pressed="false"
+              >
+                <span>04</span>
+                <div>
+                  <b>Prove the rejection</b
+                  ><small>Wrong type → policy failure → no unpack</small>
+                </div>
+                <span>↗</span>
+              </button>
+            </div>
+            <div class="terminal">
+              <div class="terminal-bar">
+                <span class="terminal-mark">›_</span><span>LOCAL TERMINAL</span
+                ><button
+                  id="copy-command"
+                  title="Copy the selected demo command"
+                >
+                  Copy command
+                </button>
+              </div>
+              <div class="terminal-body">
+                <span class="terminal-comment"
+                  ># Run from the repository root</span
+                >
+                <pre><code id="demo-command">bash scripts/demo.sh build</code></pre>
+                <div class="terminal-divider"></div>
+                <span class="terminal-comment">EVIDENCE TO SHOW</span>
+                <h3 id="demo-evidence-title">
+                  Three successful TaskRuns + a signed digest
+                </h3>
+                <p id="demo-evidence">
+                  Inspect checkout, build, and pack. The script waits for Chains
+                  and prints registry/repository@sha256:…
+                </p>
+                <code class="evidence-command" id="evidence-command"
+                  >bash scripts/demo.sh ui</code
+                >
+              </div>
+              <div class="terminal-foot">
+                <span class="status-dot"></span
+                ><span
+                  >Commands execute in your terminal. This page has no cluster
+                  access.</span
+                >
+              </div>
+            </div>
+          </div>
+          <div class="demo-preflight">
+            <a
+              class="source"
+              href="https://localhost:9443"
+              target="_blank"
+              rel="noopener noreferrer"
+              >Open Konflux UI ↗</a
+            ><code>bash scripts/demo.sh ui</code>
+            <p>
+              Show the prepared runs in Activity → Pipeline runs. The command
+              prints direct links; fresh runs need more time.
+            </p>
+          </div>
+          <aside class="speaker-notes">
+            <b>04:00–06:15 · Switch to the prepared Konflux UI tabs.</b> “I ran
+            the setup and rehearsal before this talk. Here are the actual
+            completed objects, not a simulation. We built using the repo
+            Pipeline, created a Snapshot, and the integration service ran
+            Conforma. In the release Pipeline, verification ran before the
+            StepAction restored hello.txt. The negative build still produced
+            signed output, but artifact_pack failed and no unpack TaskRun was
+            created.” Show the build graph, integration TEST_OUTPUT and report
+            logs, then release consume logs. Use the evidence commands if the UI
+            is unavailable. This is a teaching release Pipeline, not a full
+            ReleasePlan deployment.
+          </aside>
+        </section>
+
+        <section class="slide" id="next" aria-labelledby="next-title" hidden>
+          <div class="eyebrow">06 / THE TAKEAWAY</div>
+          <h2 id="next-title">
+            More build freedom.<br /><em>One trust story.</em>
+          </h2>
+          <div class="closing-layout">
+            <div class="closing-message">
+              <p>
+                Developers bring the recipe.<br />Konflux keeps the execution
+                contract.<br />Conforma decides what can release.
+              </p>
+              <a
+                class="closing-link"
+                href="https://github.com/konflux-ci/architecture/pull/387"
+                target="_blank"
+                rel="noreferrer"
+                >Discuss ADR 73 <span>↗</span></a
+              >
+            </div>
+            <div class="readiness">
+              <span class="label">PROPOSAL ≠ PRODUCTION GUARANTEE</span>
+              <div>
+                <b>Working proof of concept</b>
+                <p>
+                  Build outputs → OCI → signed provenance → integration policy →
+                  release unpacking.
+                </p>
+              </div>
+              <div>
+                <b>Still platform responsibilities</b>
+                <p>
+                  Immutable Task identities, admission enforcement, isolation,
+                  and Source VSA verification.
+                </p>
+              </div>
+              <details>
+                <summary>Implementation differences</summary>
+                <ul>
+                  <li>
+                    Repo: <code>build-cmd</code> + <code>build-args</code>. ADR:
+                    <code>script-path</code>.
+                  </li>
+                  <li>
+                    Local Tasks use namespace names and a development CLI image.
+                  </li>
+                  <li>
+                    Repo policy permits resource overrides; the ADR rejects
+                    <code>taskRunSpecs</code> more broadly.
+                  </li>
+                  <li>
+                    Current policy recognizes the catalog builder image and
+                    output type.
+                  </li>
+                  <li>
+                    Source identity checks do not prove Source L4 review or a
+                    Source VSA.
+                  </li>
+                  <li>
+                    Unpack validates the payload; Conforma is the preceding
+                    signature and policy gate.
+                  </li>
+                </ul>
+              </details>
+            </div>
+          </div>
+          <div class="closing-foot">
+            <span>ISOLATION ≠ HERMETICITY</span
+            ><span>BUILD SUCCESS ≠ RELEASE APPROVAL</span
+            ><span>LOCAL DEMO ≠ SLSA CERTIFICATION</span>
+          </div>
+          <aside class="speaker-notes">
+            <b>06:15–07:00 · Close on value and the remaining work.</b> “The
+            value is faster build-tool adoption and a shared trust model. This
+            repo proves the flow, not the full production assurance claim.
+            Production needs approved immutable Tasks, admission controls,
+            correct isolation and Chains configuration, plus separate Source VSA
+            evidence. The proposed direction is more developer freedom inside
+            one platform-owned boundary.”
+          </aside>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="slide-counter">
+          <span id="current-number">01</span><span>/ 07</span
+          ><span id="slide-label">THE IDEA</span>
+        </div>
+        <div id="progress-dots" aria-hidden="true">
+          <span class="active"></span><span></span><span></span><span></span
+          ><span></span><span></span><span></span>
+        </div>
+        <div class="navigation">
+          <span class="keyboard-hint">USE ← → TO EXPLORE</span
+          ><button id="previous" aria-label="Previous slide" disabled>←</button
+          ><button id="next-slide" aria-label="Next slide">→</button>
+        </div>
+      </footer>
+    </div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <noscript
+      ><div class="no-script">
+        This presentation uses JavaScript for slide navigation. Enable
+        JavaScript, or print this page to view every slide.
+      </div></noscript
+    >
+  </body>
+</html>

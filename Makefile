@@ -1,7 +1,14 @@
 export GOCACHE ?= /tmp/byob-go-cache
 CLI_IMAGE ?= localhost/byob-cli:devel
+.DEFAULT_GOAL := build
 
-.PHONY: build image generate check-generated check test lint validate smoke system-test
+.PHONY: build image generate check-generated check test lint validate smoke system-test presentation demo
+
+presentation:
+	node scripts/serve-presentation.mjs
+
+demo:
+	bash scripts/demo.sh $(or $(STAGE),help)
 build:
 	CGO_ENABLED=0 go build -trimpath -o dist/byob ./cmd/byob
 
@@ -20,13 +27,13 @@ test:
 	go test ./...
 
 lint:
-	shellcheck internal/remote/*.sh examples/component/*.sh examples/component/scripts/*.sh build.sh
+	shellcheck internal/remote/*.sh examples/component/*.sh examples/component/scripts/*.sh build.sh scripts/demo.sh
 	test -z "$$(gofmt -l cmd internal task-generator tests)"
 	go vet ./...
 	go -C tests/system vet ./...
 
 validate:
-	cd tests/tekton && go run . ../../task/*/0.1/*.yaml ../../stepactions/*/*/*.yaml ../../pipelines/*.yaml ../../examples/integration/byob-pipeline-policy.yaml ../../examples/pipelineruns/*.yaml ../../examples/pac/*.yaml
+	cd tests/tekton && go run . ../../task/*/0.1/*.yaml ../../stepactions/*/*/*.yaml ../../pipelines/*.yaml ../../examples/integration/byob-pipeline-policy.yaml ../../examples/pipelineruns/*.yaml ../../examples/pac/*.yaml ../../examples/demo/*.yaml
 
 check: check-generated test lint validate
 
