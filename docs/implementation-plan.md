@@ -85,8 +85,7 @@ The subsequent migration moves trusted inline scripts into a Go 1.27 CLI and
 replaces Python tests, including the container smoke test, with Go tests. Task
 YAML remains directly maintained and the remote variant remains generated.
 The CLI image uses the Red Hat Go builder and the existing Konflux task-runner
-runtime tools. The detailed migration plan is in
-[the Go CLI plan](superpowers/plans/2026-10-28-go-cli.md).
+runtime tools.
 
 ## Direct build commands and cleanup
 
@@ -98,4 +97,3 @@ Remote Podman receives the executable and arguments directly. Developer images
 need no shell or BYOB binary. The CLI uses Cobra, all Go function declarations
 have documentation, and repository Python leftovers and empty directories are
 removed.
-See [the command migration plan](superpowers/plans/2026-10-28-build-command.md).
