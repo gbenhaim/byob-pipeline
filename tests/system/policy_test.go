@@ -6,7 +6,10 @@ import (
 )
 
 var _ = Describe("byob pipeline policy", Ordered, func() {
-	var configured bool
+	var (
+		configured  bool
+		signedImage string
+	)
 
 	BeforeAll(func() {
 		configured = false
@@ -50,6 +53,26 @@ var _ = Describe("byob pipeline policy", Ordered, func() {
 		image := submitAttestedRun(gitURL, revision)
 		snapshot := submitPolicySnapshot(image)
 		waitPolicyResult(snapshot, "")
+		signedImage = image
+	})
+
+	It("rejects an image with no signature or attestation", func() {
+		image := pushUnsignedImage("unsigned")
+		snapshot := submitPolicySnapshot(image)
+		waitPolicyResult(snapshot, "builtin.image.signature_check")
+	})
+
+	It("rejects an attestation with an invalid signature", func() {
+		image := pushImageWithBadAttestation("bad-signature")
+		snapshot := submitPolicySnapshot(image)
+		waitPolicyResult(snapshot, "builtin.attestation.signature_check")
+	})
+
+	It("rejects a valid attestation for a different image digest", func() {
+		Expect(signedImage).NotTo(BeEmpty())
+		image := pushImageWithForeignAttestation("foreign-att", signedImage)
+		snapshot := submitPolicySnapshot(image)
+		waitPolicyResult(snapshot, "builtin.attestation.signature_check")
 	})
 
 	It("rejects an attestation that changes the pack artifact type", func() {

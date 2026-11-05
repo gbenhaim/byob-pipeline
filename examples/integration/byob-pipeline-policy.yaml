@@ -4,9 +4,10 @@ metadata:
   name: byob-pipeline-policy
 spec:
   description: |
-    Run the BYOB Conforma policy against the Chains provenance of the
-    snapshot image. The integration service injects SNAPSHOT. Resource
-    requests and limits are not part of this check.
+    Verify the Chains signature of each snapshot image and run the BYOB
+    Conforma policy on the signed provenance. The Chains public key is
+    Secret chains-public-key key cosign.pub. The integration service injects
+    SNAPSHOT. Resource requests and limits are not part of this check.
   params:
   - name: SNAPSHOT
     type: string
@@ -27,6 +28,8 @@ spec:
         env:
         - name: HOME
           value: /tmp
+        - name: SSL_CERT_FILE
+          value: /certs/ca-bundle.crt
         securityContext:
           runAsNonRoot: true
           runAsUser: 1001
@@ -42,6 +45,9 @@ spec:
         - name: certs
           mountPath: /certs
           readOnly: true
+        - name: chains-public-key
+          mountPath: /keys
+          readOnly: true
         - name: registry-auth
           mountPath: /auth
           readOnly: true
@@ -56,80 +62,48 @@ spec:
           images=$$(printf '%s' "$$SNAPSHOT" | jq -r '.components[].containerImage')
           test -n "$$images"
           test -f /certs/ca-bundle.crt
-          rm -rf /tmp/statements
-          mkdir -p /tmp/statements
+          test -f /keys/cosign.pub
+          if [ -f /auth/.dockerconfigjson ]; then
+            mkdir -p /tmp/docker
+            cp /auth/.dockerconfigjson /tmp/docker/config.json
+            export DOCKER_CONFIG=/tmp/docker
+          fi
+          rm -rf /tmp/ec
+          mkdir -p /tmp/ec
           n=0
           for image in $$images; do
             n=$$((n + 1))
-            case "$$image" in
-              *@sha256:*)
-                repo=$${image%@sha256:*}
-                digest=sha256:$${image##*@sha256:}
-                tag=""
-                ;;
-              *)
-                repo=$${image%:*}
-                tag=$${image##*:}
-                digest=""
-                ;;
-            esac
-            host=$${repo%%/*}
-            path=$${repo#*/}
-            userpass=""
-            if [ -f /auth/.dockerconfigjson ]; then
-              basic=$$(jq -r --arg h "$$host" '.auths[$$h].auth // empty' /auth/.dockerconfigjson)
-              if [ -n "$$basic" ]; then
-                userpass=$$(printf '%s' "$$basic" | base64 -d)
-              fi
-            fi
-            fetch() {
-              if [ -n "$$userpass" ]; then
-                curl -fsS --cacert /certs/ca-bundle.crt --user "$$userpass" "$$@"
-              else
-                curl -fsS --cacert /certs/ca-bundle.crt "$$@"
-              fi
-            }
-            if [ -z "$$digest" ]; then
-              digest=$$(fetch -D - -o /dev/null \
-                -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-                "https://$${host}/v2/$${path}/manifests/$${tag}" \
-                | awk 'tolower($$1)=="docker-content-digest:" {gsub("\r","",$$2); print $$2}')
-            fi
-            test -n "$$digest"
-            att=sha256-$${digest#sha256:}.att
-            fetch \
-              -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-              "https://$${host}/v2/$${path}/manifests/$${att}" -o /tmp/manifest.json
-            blob=$$(jq -r '.layers[] | select(.mediaType=="application/vnd.dsse.envelope.v1+json") | .digest' /tmp/manifest.json | head -n 1)
-            test -n "$$blob"
-            fetch "https://$${host}/v2/$${path}/blobs/$${blob}" -o /tmp/envelope.json
-            jq -r '.payload' /tmp/envelope.json | base64 -d > "/tmp/statements/$${n}.json"
+            ec validate image \
+              --image "$$image" \
+              --policy /policy/policy.yaml \
+              --public-key /keys/cosign.pub \
+              --ignore-rekor \
+              --strict=false \
+              --info \
+              --show-successes=false \
+              --output "json=/tmp/ec/$$n.json" \
+              --output "appstudio=/tmp/ec/$$n.appstudio.json" \
+              --output "text=/tmp/ec/$$n.txt"
           done
-          jq -s '{kind: "AttestationList", items: .}' /tmp/statements/*.json > /tmp/input.json
-          ec validate input /tmp/input.json --policy /policy/policy.yaml \
-            --strict=false \
-            --info \
-            --show-successes=false \
-            --output json=/tmp/report.json \
-            --output text=/tmp/report.txt
-          jq '
-            ([.filepaths[] | (.violations | length)] | add // 0) as $failures |
-            ([.filepaths[] | (.warnings | length)] | add // 0) as $warnings |
-            ([.filepaths[] | (."success-count")] | add // 0) as $successes |
+          cat /tmp/ec/*.txt > /tmp/report.txt
+          jq -s '
+            (map(.successes) | add // 0) as $$successes |
+            (map(.failures) | add // 0) as $$failures |
+            (map(.warnings) | add // 0) as $$warnings |
             {
-              timestamp: (now | strftime("%Y-%m-%dT%H:%M:%SZ")),
-              namespace: "",
-              successes: $successes,
-              failures: $failures,
-              warnings: $warnings,
+              timestamp: (.[0].timestamp // (now | tostring)),
+              namespace: (.[0].namespace // ""),
+              successes: $$successes,
+              failures: $$failures,
+              warnings: $$warnings,
               result: (
-                if $failures > 0 then "FAILURE"
-                elif $warnings > 0 then "WARNING"
+                if $$failures > 0 then "FAILURE"
+                elif $$warnings > 0 then "WARNING"
                 else "SUCCESS"
                 end
               )
             }
-          ' /tmp/report.json > "$(results.TEST_OUTPUT.path)"
+          ' /tmp/ec/*.appstudio.json > "$(results.TEST_OUTPUT.path)"
         env:
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
@@ -158,6 +132,13 @@ spec:
           items:
           - key: ca-bundle.crt
             path: ca-bundle.crt
+      - name: chains-public-key
+        secret:
+          secretName: chains-public-key
+          defaultMode: 0444
+          items:
+          - key: cosign.pub
+            path: cosign.pub
       - name: registry-auth
         secret:
           secretName: byob-registry-auth

@@ -339,11 +339,16 @@ integration test scenario.
 
 The scenario Pipeline records `TEST_OUTPUT` in the same shape as the upstream
 [enterprise-contract Pipeline](https://github.com/conforma/tekton-catalog/blob/main/pipelines/enterprise-contract/0.1/enterprise-contract.yaml).
-The result contains `timestamp`, `namespace`, `successes`, `failures`,
-`warnings`, and `result` (`SUCCESS`, `WARNING`, or `FAILURE`). The task prints
-that summary and the rule report, then fails unless `result` is `SUCCESS` or
-`WARNING`. `ec validate input` does not write this summary itself, so the task
-builds it from the JSON report.
+`ec validate image` checks the snapshot image and its attestation with the
+Chains public key in Secret `chains-public-key`, key `cosign.pub`. Copy that
+key from the Chains public key; do not mount the signing private key. Rekor is
+ignored because Chains on this cluster does not write transparency entries.
+The attestation subject must be the snapshot digest. Unsigned envelopes,
+untrusted signatures, and an attestation for a different image fail before a
+successful summary is written. The summary contains `timestamp`, `namespace`,
+`successes`, `failures`, `warnings`, and `result` (`SUCCESS`, `WARNING`, or
+`FAILURE`). The task prints that summary and the rule report, then fails
+unless `result` is `SUCCESS` or `WARNING`.
 
 Use the cluster's admission integration to evaluate policy before Task Pods
 start. It must allow only approved, immutable Task bundle references and

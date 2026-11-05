@@ -1,10 +1,12 @@
 package system
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,6 +32,7 @@ func installPipelinePolicy() {
 		"--dry-run=client", "-o", "yaml",
 	)
 	mustKubectlStdin(manifest, "apply", "-f", "-")
+	installChainsPublicKey()
 	mustKubectl(
 		"apply", "-n", namespace,
 		"-f", filepath.Join(root, "examples", "integration", "byob-pipeline-policy.yaml"),
@@ -38,6 +41,252 @@ func installPipelinePolicy() {
 	scenario, err := os.ReadFile(filepath.Join(root, "examples", "integration", "byob-slsa.yaml"))
 	Expect(err).NotTo(HaveOccurred())
 	mustKubectlStdin(strings.ReplaceAll(string(scenario), "__NAMESPACE__", namespace), "apply", "-n", namespace, "-f", "-")
+}
+
+// installChainsPublicKey copies the Chains public key into the test namespace.
+// The policy task verifies signatures with this key and does not receive the
+// signing private key.
+func installChainsPublicKey() {
+	GinkgoHelper()
+	encoded := strings.TrimSpace(mustKubectl(
+		"get", "secret", "-n", "openshift-pipelines", "public-key",
+		"-o", `jsonpath={.data.cosign\.pub}`,
+	))
+	Expect(encoded).NotTo(BeEmpty(), "openshift-pipelines/public-key has no cosign.pub")
+	pem, err := base64.StdEncoding.DecodeString(encoded)
+	Expect(err).NotTo(HaveOccurred(), "Chains public key is not base64")
+	Expect(string(pem)).To(ContainSubstring("BEGIN PUBLIC KEY"))
+
+	path := filepath.Join(GinkgoT().TempDir(), "cosign.pub")
+	Expect(os.WriteFile(path, pem, 0600)).To(Succeed())
+	manifest := mustKubectl(
+		"create", "secret", "generic", "chains-public-key", "-n", namespace,
+		"--from-file=cosign.pub="+path,
+		"--dry-run=client", "-o", "yaml",
+	)
+	mustKubectlStdin(manifest, "apply", "-f", "-")
+}
+
+// pushUnsignedImage publishes an image with no signature or attestation.
+// It returns the digest reference.
+func pushUnsignedImage(tag string) string {
+	GinkgoHelper()
+	script := `
+set -eu
+if [ -s /var/run/byob-registry-auth/config.json ]; then
+  export DOCKER_CONFIG=/var/run/byob-registry-auth
+fi
+printf 'unsigned\n' > unsigned.txt
+out=$(oras push "$REPO:$TAG" unsigned.txt 2>&1)
+printf '%s\n' "$out" >&2
+digest=$(printf '%s\n' "$out" | awk '/^Digest: / {print $2}')
+test -n "$digest"
+printf 'BYOB_DIGEST %s\n' "$digest"
+`
+	logs := runRegistryScript("byob-reg-unsigned", script, map[string]string{
+		"REPO": registryRepository("unsigned"),
+		"TAG":  tag,
+	})
+	return registryRepository("unsigned") + "@" + digestFromLogs(logs)
+}
+
+// pushImageWithBadAttestation publishes an image whose attestation signature
+// does not verify. It returns the digest reference.
+func pushImageWithBadAttestation(tag string) string {
+	GinkgoHelper()
+	script := `
+set -eu
+if [ -s /var/run/byob-registry-auth/config.json ]; then
+  export DOCKER_CONFIG=/var/run/byob-registry-auth
+fi
+printf 'bad-signature\n' > payload.txt
+out=$(oras push "$REPO:$TAG" payload.txt 2>&1)
+printf '%s\n' "$out" >&2
+digest=$(printf '%s\n' "$out" | awk '/^Digest: / {print $2}')
+test -n "$digest"
+payload=$(printf '%s' '{"subject":[{"name":"untrusted"}]}' | base64 -w 0)
+jq -n --arg payload "$payload" \
+  '{payloadType:"application/vnd.in-toto+json",payload:$payload,signatures:[{keyid:"untrusted",sig:"AAAA"}]}' \
+  > envelope.json
+envelope_digest=sha256:$(sha256sum envelope.json | awk '{print $1}')
+envelope_size=$(wc -c < envelope.json | tr -d ' ')
+oras blob push "$REPO@$envelope_digest" envelope.json
+printf '{}' > empty.json
+empty_digest=sha256:$(sha256sum empty.json | awk '{print $1}')
+empty_size=$(wc -c < empty.json | tr -d ' ')
+oras blob push "$REPO@$empty_digest" empty.json
+jq -n \
+  --arg config "$empty_digest" --argjson configSize "$empty_size" \
+  --arg layer "$envelope_digest" --argjson layerSize "$envelope_size" \
+  '{
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: {mediaType: "application/vnd.oci.empty.v1+json", digest: $config, size: $configSize},
+    layers: [{mediaType: "application/vnd.dsse.envelope.v1+json", digest: $layer, size: $layerSize}]
+  }' > manifest.json
+hex=${digest#sha256:}
+oras manifest push "$REPO:sha256-${hex}.att" manifest.json
+printf 'BYOB_DIGEST %s\n' "$digest"
+`
+	logs := runRegistryScript("byob-reg-bad-signature", script, map[string]string{
+		"REPO": registryRepository("bad-signature"),
+		"TAG":  tag,
+	})
+	return registryRepository("bad-signature") + "@" + digestFromLogs(logs)
+}
+
+// pushImageWithForeignAttestation publishes an image and attaches a copy of
+// source's signed attestation. source is a digest reference. The returned
+// reference is the new image.
+func pushImageWithForeignAttestation(tag, source string) string {
+	GinkgoHelper()
+	repository, digest := splitDigestReference(source)
+	script := `
+set -eu
+if [ -s /var/run/byob-registry-auth/config.json ]; then
+  export DOCKER_CONFIG=/var/run/byob-registry-auth
+fi
+printf 'other-image\n' > other.txt
+out=$(oras push "$REPO:$TAG" other.txt 2>&1)
+printf '%s\n' "$out" >&2
+digest=$(printf '%s\n' "$out" | awk '/^Digest: / {print $2}')
+test -n "$digest"
+src_hex=${SOURCE_DIGEST#sha256:}
+dst_hex=${digest#sha256:}
+oras copy "$SOURCE_REPOSITORY:sha256-${src_hex}.att" "$REPO:sha256-${dst_hex}.att"
+printf 'BYOB_DIGEST %s\n' "$digest"
+`
+	logs := runRegistryScript("byob-reg-foreign-att", script, map[string]string{
+		"REPO":              registryRepository("foreign-att"),
+		"TAG":               tag,
+		"SOURCE_REPOSITORY": repository,
+		"SOURCE_DIGEST":     digest,
+	})
+	return registryRepository("foreign-att") + "@" + digestFromLogs(logs)
+}
+
+// registryRepository returns the test repository for one registry fixture.
+func registryRepository(name string) string {
+	return fmt.Sprintf("%s/%s/%s", registryHost, namespace, name)
+}
+
+// digestFromLogs returns the digest printed by a registry fixture script.
+func digestFromLogs(logs string) string {
+	GinkgoHelper()
+	var digest string
+	for _, line := range strings.Split(logs, "\n") {
+		if value, ok := strings.CutPrefix(line, "BYOB_DIGEST "); ok {
+			digest = strings.TrimSpace(value)
+		}
+	}
+
+	Expect(digest).To(MatchRegexp(`^sha256:[a-f0-9]{64}$`), "registry script logs:\n%s", logs)
+	return digest
+}
+
+// splitDigestReference splits repository@sha256:digest.
+func splitDigestReference(reference string) (string, string) {
+	GinkgoHelper()
+	repository, digest, ok := strings.Cut(reference, "@")
+	Expect(ok).To(BeTrue(), "digest reference %q", reference)
+	Expect(digest).To(MatchRegexp(`^sha256:[a-f0-9]{64}$`))
+	Expect(repository).NotTo(BeEmpty())
+	return repository, digest
+}
+
+// runRegistryScript runs script in a short-lived registry client and returns its logs.
+func runRegistryScript(name, script string, env map[string]string) string {
+	GinkgoHelper()
+	var envYAML strings.Builder
+	names := make([]string, 0, len(env))
+	for key := range env {
+		names = append(names, key)
+	}
+	slices.Sort(names)
+	for _, key := range names {
+		fmt.Fprintf(&envYAML, "    - name: %s\n      value: %q\n", key, env[key])
+	}
+
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  restartPolicy: Never
+  containers:
+  - name: oras
+    image: localhost/byob-cli:devel
+    imagePullPolicy: IfNotPresent
+    workingDir: /tmp
+    command: ["/bin/sh", "-c"]
+    args:
+    - %q
+    env:
+%s    - name: SSL_CERT_FILE
+      value: %s
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - name: work
+      mountPath: /tmp
+    - name: registry-auth
+      mountPath: /var/run/byob-registry-auth
+      readOnly: true
+    - name: trusted-ca
+      mountPath: %s
+      subPath: ca-bundle.crt
+      readOnly: true
+  volumes:
+  - name: work
+    emptyDir: {}
+  - name: registry-auth
+    secret:
+      secretName: byob-registry-auth
+      optional: true
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+  - name: trusted-ca
+    configMap:
+      name: trusted-ca
+      items:
+      - key: ca-bundle.crt
+        path: ca-bundle.crt
+`, name, namespace, script, envYAML.String(), caPath, caPath)
+	_, _, _ = kubectl("delete", "pod", "-n", namespace, name, "--ignore-not-found=true", "--wait=true")
+	mustKubectlStdin(manifest, "apply", "-f", "-")
+
+	Eventually(func() error {
+		stdout, stderr, err := kubectl(
+			"get", "pod", "-n", namespace, name,
+			"-o", "jsonpath={.status.phase}",
+		)
+		if err != nil {
+			return fmt.Errorf("read registry pod: %w\n%s%s", err, stdout, stderr)
+		}
+
+		phase := strings.TrimSpace(stdout)
+		if phase == "Succeeded" {
+			return nil
+		}
+
+		if phase == "Failed" {
+			logs, _, _ := kubectl("logs", "-n", namespace, name)
+			described, _, _ := kubectl("describe", "pod", "-n", namespace, name)
+			return StopTrying(fmt.Sprintf("registry pod failed\n%s\n%s", described, logs))
+		}
+
+		return fmt.Errorf("registry pod phase %s", phase)
+	}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+
+	return mustKubectl("logs", "-n", namespace, name)
 }
 
 // expectIntegrationReady checks that the integration service can create test PipelineRuns.

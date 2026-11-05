@@ -3,8 +3,10 @@ package policy
 import rego.v1
 
 # Conforma queries every rule by reference and only scores package policy.
-# The input is an AttestationList of in-toto statements. Chains stores one
-# statement for each image. Helpers below are sets, not functions.
+# ec validate image supplies each Chains statement under attestations.
+# An AttestationList still supplies the same statements under items.
+# Chains stores one statement for each image. Helpers below are sets, not
+# functions.
 
 # approved_checkout is the immutable git-clone task the catalog publishes.
 approved_checkout := "quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.2.4@sha256:df3c42d78223f07b40a84dd29e5c8860d14777ffdf150ea08c738770f51216dc"
@@ -22,6 +24,13 @@ required := {"byob", "byob-chained", "byob-remote", "byob-matrix"}
 command_pattern := `^\./[A-Za-z0-9_./-]+$`
 
 # statements is every Chains SLSA provenance statement in the input.
+statements contains statement if {
+	some attestation in object.get(input, "attestations", [])
+	statement := object.get(attestation, "statement", {})
+	statement.predicateType == "https://slsa.dev/provenance/v0.2"
+	statement.predicate.buildType == "tekton.dev/v1/PipelineRun"
+}
+
 statements contains statement if {
 	some statement in object.get(input, "items", [])
 	statement.predicateType == "https://slsa.dev/provenance/v0.2"
