@@ -1,0 +1,24 @@
+# Development example: replace YOUR_* and REPLACE_WITH_* before submitting.
+# Create git-source-credentials in the same namespace before applying this run.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: byob-private-
+spec:
+  taskRunTemplate:
+    serviceAccountName: byob-build
+  pipelineRef:
+    name: byob
+  params:
+  - name: git-url
+    value: https://github.com/YOUR_ORG/YOUR_PRIVATE_COMPONENT
+  - name: revision
+    value: REPLACE_WITH_COMMIT_SHA
+  - name: output-image
+    value: quay.io/YOUR_ORG/component:REPLACE_WITH_UNIQUE_BUILD_TAG
+  - name: oci-storage
+    value: quay.io/YOUR_ORG/component-ta
+  workspaces:
+  - name: git-auth
+    secret:
+      secretName: git-source-credentials

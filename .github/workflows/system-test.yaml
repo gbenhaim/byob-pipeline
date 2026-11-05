@@ -1,0 +1,95 @@
+name: System tests
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: system-test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  system-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # The Kind node image's containerd records a loaded image as name@digest.
+      # Older containerd records a bare sha256, which Chains will not sign.
+      KIND_EXPERIMENTAL_PROVIDER: podman
+      KIND_NODE_IMAGE: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /usr/share/swift \
+            /opt/hostedtoolcache
+          sudo docker image prune -af
+          df -h
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tests/system/go.sum
+      - name: Install kind and kubectl
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          curl -fsSL -o /tmp/kubectl https://dl.k8s.io/release/v1.36.4/bin/linux/amd64/kubectl
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          kind version
+          kubectl version --client
+      - name: Install rootless Podman
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns
+          user="$(id -un)"
+          grep -q "^${user}:" /etc/subuid || echo "${user}:100000:65536" | sudo tee -a /etc/subuid
+          grep -q "^${user}:" /etc/subgid || echo "${user}:100000:65536" | sudo tee -a /etc/subgid
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          podman info
+      - uses: actions/checkout@v4
+        with:
+          repository: konflux-ci/konflux-ci
+          ref: v0.2.2
+          path: konflux-ci
+      - name: Pin the Kind node image
+        working-directory: konflux-ci
+        run: |
+          set -eu
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("kind-config.yaml")
+          text = path.read_text()
+          needle = "- role: control-plane\n"
+          image = "  image: " + __import__("os").environ["KIND_NODE_IMAGE"] + "\n"
+          if needle not in text:
+              raise SystemExit("kind-config.yaml has no control-plane node")
+          path.write_text(text.replace(needle, needle + image, 1))
+          PY
+      - name: Deploy Konflux on Kind
+        working-directory: konflux-ci
+        env:
+          CONTAINER_TOOL: podman
+          KIND_CLUSTER: konflux
+          OPERATOR_INSTALL_METHOD: release
+          OPERATOR_RELEASE: v0.2.2
+          SKIP_SECRETS: "true"
+        run: ./scripts/deploy-local.sh
+      - name: Run system tests
+        env:
+          BYOB_CLUSTER: existing
+          BYOB_KIND_CLUSTER: konflux
+          BYOB_GIT_URL: https://github.com/gbenhaim/byob-system-fixture
+          BYOB_GIT_REF: main
+          GIT_TERMINAL_PROMPT: "0"
+        run: make system-test

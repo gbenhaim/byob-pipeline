@@ -1,6 +1,6 @@
 module github.com/gbenhaim/byob-pipeline/tests/tekton
 
-go 1.26.4
+go 1.27.0
 
 require (
 	github.com/tektoncd/pipeline v1.16.0

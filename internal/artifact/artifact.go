@@ -1,0 +1,769 @@
+// Package artifact validates and stages build outputs for trusted handoffs.
+package artifact
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+)
+
+// Prepare removes checkout credentials and validates the restored source tree
+// before it enters a developer image. The build command is resolved later inside
+// that image, where it will execute.
+func Prepare(source string) error {
+	if err := ScrubCredentials(source); err != nil {
+		return fmt.Errorf("source validation failed: %w", err)
+	}
+
+	if _, err := checkTree(source); err != nil {
+		return fmt.Errorf("source validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// ScrubCredentials removes credential files from a checkout and strips HTTP
+// credentials from Git config. Repository history is left in place.
+func ScrubCredentials(source string) error {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("expected a real directory: %s", source)
+	}
+
+	var credentials, configs []string
+	err = filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || path == source {
+			return err
+		}
+
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+
+		relative = filepath.ToSlash(relative)
+		switch {
+		case entry.Name() == ".git-credentials" || entry.Name() == ".netrc" || relative == ".git/credentials":
+			credentials = append(credentials, path)
+		case relative == ".git/config" || strings.HasSuffix(relative, "/.git/config"):
+			configs = append(configs, path)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, path := range credentials {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+
+	for _, path := range configs {
+		if err := scrubGitConfig(path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// scrubGitConfig rewrites one Git config file without following a symlink.
+func scrubGitConfig(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to rewrite %s", path)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	updated := scrubGitConfigText(string(data))
+	if updated == string(data) {
+		return nil
+	}
+
+	return os.WriteFile(path, []byte(updated), info.Mode().Perm())
+}
+
+// scrubGitConfigText drops credential directives and HTTP userinfo.
+func scrubGitConfigText(text string) string {
+	lines := strings.Split(text, "\n")
+	section := ""
+	rewritten := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section = gitSectionName(trimmed)
+			rewritten = append(rewritten, scrubQuotedURLs(line))
+			continue
+		}
+
+		indent, key, value, ok := splitGitAssignment(line)
+		if !ok {
+			rewritten = append(rewritten, line)
+			continue
+		}
+
+		lower := strings.ToLower(key)
+		if lower == "extraheader" || (section == "credential" && lower == "helper") {
+			continue
+		}
+
+		if cleaned, changed := scrubConfiguredURL(value); changed {
+			rewritten = append(rewritten, indent+key+" = "+cleaned)
+			continue
+		}
+
+		rewritten = append(rewritten, line)
+	}
+
+	return strings.Join(rewritten, "\n")
+}
+
+// gitSectionName returns the lowercase name from a Git config section header.
+func gitSectionName(header string) string {
+	header = strings.TrimSpace(header)
+	header = strings.Trim(header, "[]")
+	header = strings.TrimSpace(header)
+	if index := strings.IndexAny(header, " \t\""); index >= 0 {
+		header = header[:index]
+	}
+
+	return strings.ToLower(strings.TrimSpace(header))
+}
+
+// splitGitAssignment separates an indented Git config key and value.
+func splitGitAssignment(line string) (string, string, string, bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	key, value, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return "", "", "", false
+	}
+
+	return line[:len(line)-len(trimmed)], strings.TrimSpace(key), strings.TrimSpace(value), true
+}
+
+// scrubQuotedURLs removes HTTP credentials from quoted URLs on one line.
+func scrubQuotedURLs(line string) string {
+	var rewritten strings.Builder
+	rest := line
+	for {
+		start := strings.IndexByte(rest, '"')
+		if start < 0 {
+			rewritten.WriteString(rest)
+			return rewritten.String()
+		}
+
+		end := strings.IndexByte(rest[start+1:], '"')
+		if end < 0 {
+			rewritten.WriteString(rest)
+			return rewritten.String()
+		}
+
+		end += start + 1
+		rewritten.WriteString(rest[:start])
+		inner := rest[start+1 : end]
+		if cleaned, ok := removeUserinfo(inner); ok {
+			rewritten.WriteString(`"` + cleaned + `"`)
+		} else {
+			rewritten.WriteString(rest[start : end+1])
+		}
+
+		rest = rest[end+1:]
+	}
+}
+
+// scrubConfiguredURL removes HTTP credentials from a possibly quoted config value.
+func scrubConfiguredURL(value string) (string, bool) {
+	quote := ""
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		quote = `"`
+		value = value[1 : len(value)-1]
+	}
+
+	cleaned, ok := removeUserinfo(value)
+	if !ok {
+		return "", false
+	}
+
+	return quote + cleaned + quote, true
+}
+
+// removeUserinfo strips credentials from HTTP URLs and from any URL that carries
+// a password. SSH URLs such as ssh://git@host keep their username.
+func removeUserinfo(value string) (string, bool) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User == nil || parsed.Host == "" || parsed.Scheme == "" {
+		return "", false
+	}
+
+	_, hasPassword := parsed.User.Password()
+	if parsed.Scheme != "http" && parsed.Scheme != "https" && !hasPassword {
+		return "", false
+	}
+
+	parsed.User = nil
+	return parsed.String(), true
+}
+
+// StageOutput copies a validated build-output directory into the private export
+// tree as out/. Platform metadata comes from the trusted caller.
+func StageOutput(buildOutput, destination, platform string) error {
+	if err := checkOutput(buildOutput); err != nil {
+		return err
+	}
+
+	if platform != "" {
+		if err := checkPlatform(platform); err != nil {
+			return err
+		}
+	}
+
+	if err := os.MkdirAll(destination, 0755); err != nil {
+		return err
+	}
+
+	if err := realDirectory(destination); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		return err
+	}
+
+	if len(entries) != 0 {
+		return fmt.Errorf("export directory must be empty: %s", destination)
+	}
+
+	if err := copyTree(buildOutput, filepath.Join(destination, "out")); err != nil {
+		return err
+	}
+
+	if platform != "" {
+		return os.WriteFile(filepath.Join(destination, ".konflux-platform"), []byte(platform+"\n"), 0644)
+	}
+
+	return nil
+}
+
+// Pack stages flat, platform, or task-named outputs and writes a reproducible
+// gzip-compressed tar archive. All inputs are validated before staging begins.
+func Pack(inputRoot, packageRoot, archivePath, layout string) error {
+	if layout != "flat" && layout != "platform" && layout != "named" {
+		return fmt.Errorf("unknown layout: %s", layout)
+	}
+
+	selected, err := selectPackageInputs(inputRoot, layout)
+	if err != nil {
+		return err
+	}
+
+	if err := stagePackage(selected, packageRoot, layout); err != nil {
+		return err
+	}
+
+	return writeArchive(packageRoot, archivePath)
+}
+
+type packageSelection struct {
+	output string
+	name   string
+}
+
+// selectPackageInputs validates each indexed output before package staging begins.
+func selectPackageInputs(inputRoot, layout string) ([]packageSelection, error) {
+	if err := realDirectory(inputRoot); err != nil {
+		return nil, err
+	}
+
+	inputs, err := os.ReadDir(inputRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(inputs) == 0 || (layout == "flat" && len(inputs) != 1) {
+		return nil, fmt.Errorf("flat layout requires one source; platform and named layouts require at least one")
+	}
+
+	selected := make([]packageSelection, 0, len(inputs))
+	destinations := make(map[string]bool)
+	for _, input := range inputs {
+		source := filepath.Join(inputRoot, input.Name())
+		if err := realDirectory(source); err != nil {
+			return nil, err
+		}
+
+		output := filepath.Join(source, "out")
+		if err := checkOutput(output); err != nil {
+			return nil, err
+		}
+
+		name := ""
+		switch layout {
+		case "platform":
+			name, err = packagePlatformName(source, destinations)
+		case "named":
+			name, err = packageTaskName(input.Name(), destinations)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		destinations[name] = true
+		selected = append(selected, packageSelection{output: output, name: name})
+	}
+
+	return selected, nil
+}
+
+// packagePlatformName reads and validates the trusted platform marker for one input.
+func packagePlatformName(source string, destinations map[string]bool) (string, error) {
+	marker := filepath.Join(source, ".konflux-platform")
+	info, err := os.Lstat(marker)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("missing trusted platform marker: %s", marker)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return "", err
+	}
+
+	platform := strings.TrimSpace(string(data))
+	if err := checkPlatform(platform); err != nil {
+		return "", err
+	}
+
+	name := platformPunctuation.ReplaceAllString(platform, "-")
+	if destinations[name] {
+		return "", fmt.Errorf("duplicate platform directory: %s", name)
+	}
+
+	return name, nil
+}
+
+// packageTaskName uses a restored task label as the archive directory.
+func packageTaskName(name string, destinations map[string]bool) (string, error) {
+	if !taskLabel.MatchString(name) {
+		return "", fmt.Errorf("invalid task label: %q", name)
+	}
+
+	if destinations[name] {
+		return "", fmt.Errorf("duplicate task label: %q", name)
+	}
+
+	return name, nil
+}
+
+// stagePackage copies selected outputs into the requested flat, platform, or named layout.
+func stagePackage(selected []packageSelection, packageRoot, layout string) error {
+	if err := os.RemoveAll(packageRoot); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(packageRoot), 0755); err != nil {
+		return err
+	}
+
+	if layout == "platform" || layout == "named" {
+		if err := os.Mkdir(packageRoot, 0755); err != nil {
+			return err
+		}
+	}
+
+	for _, item := range selected {
+		if err := copyTree(item.output, filepath.Join(packageRoot, item.name)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// safeRelative requires a nonempty relative path with no parent components.
+func safeRelative(value string) error {
+	if value == "" || filepath.IsAbs(value) || slices.Contains(strings.Split(filepath.ToSlash(value), "/"), "..") {
+		return fmt.Errorf("expected a relative path without '..': %q", value)
+	}
+
+	return nil
+}
+
+var (
+	platformLabel       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./-]*$`)
+	platformPunctuation = regexp.MustCompile(`[^A-Za-z0-9]`)
+	taskLabel           = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+)
+
+// checkPlatform validates labels before they become platform directory names.
+func checkPlatform(platform string) error {
+	if !platformLabel.MatchString(platform) {
+		return fmt.Errorf("invalid platform label: %q", platform)
+	}
+
+	return safeRelative(platform)
+}
+
+// realDirectory requires the cleaned path to name a directory, not a symlink.
+func realDirectory(path string) error {
+	info, err := os.Lstat(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("expected a real directory: %s", path)
+	}
+
+	return nil
+}
+
+// checkOutput validates an output tree and requires at least one regular file.
+func checkOutput(path string) error {
+	files, err := checkTree(path)
+	if err != nil {
+		return err
+	}
+
+	if files == 0 {
+		return fmt.Errorf("output has no regular files: %s", path)
+	}
+
+	return nil
+}
+
+// checkTree counts regular files while rejecting special files and unsafe links.
+// The root must be a real directory; links within it must stay inside the tree.
+func checkTree(root string) (int, error) {
+	if err := realDirectory(root); err != nil {
+		return 0, err
+	}
+
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return 0, err
+	}
+
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return 0, err
+	}
+
+	files := 0
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case entry.Type()&os.ModeSymlink != 0:
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+
+			return checkLink(root, relative)
+		case entry.IsDir():
+			return nil
+		case entry.Type().IsRegular():
+			files++
+			return nil
+		default:
+			return fmt.Errorf("unsupported special file: %s", path)
+		}
+	})
+	return files, err
+}
+
+// checkLink resolves components without cleaning away '..' before following links.
+// Missing targets are allowed, but dangling links must stay inside the artifact.
+func checkLink(root, relative string) error {
+	pending := strings.Split(relative, string(filepath.Separator))
+	current := root
+	links := 0
+	for len(pending) > 0 {
+		part := pending[0]
+		pending = pending[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if current == root {
+				return fmt.Errorf("symlink escapes artifact: %s", relative)
+			}
+
+			current = filepath.Dir(current)
+			continue
+		}
+
+		path := filepath.Join(current, part)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			current = path
+			continue
+		}
+
+		if err != nil {
+			return err
+		}
+
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = path
+			continue
+		}
+
+		links++
+		if links > 255 {
+			return fmt.Errorf("symlink cycle or excessive links: %s", relative)
+		}
+
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+
+		if filepath.IsAbs(target) {
+			return fmt.Errorf("absolute symlink in artifact: %s", path)
+		}
+
+		pending = append(strings.Split(target, string(filepath.Separator)), pending...)
+	}
+
+	return nil
+}
+
+// copyTree copies a validated tree, preserving file modes and symlink targets.
+// Directory modes are restored after copying so read-only trees remain writable
+// during construction.
+func copyTree(source, destination string) error {
+	type directory struct {
+		path string
+		mode os.FileMode
+	}
+	var directories []directory
+	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+
+		target := filepath.Join(destination, relative)
+		switch {
+		case info.IsDir():
+			if err := os.Mkdir(target, info.Mode().Perm()|0700); err != nil {
+				return err
+			}
+
+			directories = append(directories, directory{target, info.Mode()})
+			return nil
+		case info.Mode()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+
+			return os.Symlink(link, target)
+		case info.Mode().IsRegular():
+			return copyFile(path, target, info.Mode())
+		default:
+			return fmt.Errorf("unsupported special file: %s", path)
+		}
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, dir := range slices.Backward(directories) {
+		if err := os.Chmod(dir.path, dir.mode); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// copyFile creates a new destination with the source contents and requested mode.
+func copyFile(source, destination string, mode os.FileMode) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+
+	defer input.Close()
+
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+
+	defer output.Close()
+
+	if _, err := io.Copy(output, input); err != nil {
+		return err
+	}
+
+	if err := output.Chmod(mode); err != nil {
+		return err
+	}
+
+	return output.Close()
+}
+
+// writeArchive atomically publishes a gzip-compressed tar of the staged tree.
+// Sorted entries and normalized owner and time metadata make it reproducible.
+func writeArchive(root, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	file, err := os.CreateTemp(filepath.Dir(path), ".payload-*.tar.gz")
+	if err != nil {
+		return err
+	}
+
+	defer os.Remove(file.Name())
+	defer file.Close()
+	compressed := gzip.NewWriter(file)
+	archive := tar.NewWriter(compressed)
+	if err := writeArchiveEntries(root, archive); err != nil {
+		return err
+	}
+
+	if err := archive.Close(); err != nil {
+		return err
+	}
+
+	if err := compressed.Close(); err != nil {
+		return err
+	}
+
+	if err := file.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(file.Name(), path)
+}
+
+// writeArchiveEntries serializes sorted files from root with normalized metadata.
+func writeArchiveEntries(root string, archive *tar.Writer) error {
+	paths, err := archivePaths(root)
+	if err != nil {
+		return err
+	}
+
+	for _, path := range paths {
+		if err := writeArchiveEntry(root, path, archive); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// archivePaths returns every non-root path in deterministic lexical order.
+func archivePaths(root string) ([]string, error) {
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && path != root {
+			paths = append(paths, path)
+		}
+
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slices.Sort(paths)
+	return paths, nil
+}
+
+// writeArchiveEntry writes one tar header and, for regular files, its contents.
+func writeArchiveEntry(root, path string, archive *tar.Writer) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+
+	link := ""
+	if info.Mode()&os.ModeSymlink != 0 {
+		link, err = os.Readlink(path)
+		if err != nil {
+			return err
+		}
+	}
+
+	header, err := tar.FileInfoHeader(info, link)
+	if err != nil {
+		return err
+	}
+
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+
+	header.Name = filepath.ToSlash(relative)
+	header.Uid, header.Gid = 0, 0
+	header.Uname, header.Gname = "", ""
+	header.ModTime = time.Unix(0, 0)
+	header.AccessTime, header.ChangeTime = time.Time{}, time.Time{}
+	header.Format = tar.FormatPAX
+	if err := archive.WriteHeader(header); err != nil {
+		return err
+	}
+
+	if info.Mode().IsRegular() {
+		return archiveFile(archive, path)
+	}
+
+	return nil
+}
+
+// archiveFile writes a regular file's contents after its tar header is emitted.
+func archiveFile(archive *tar.Writer, path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+	_, err = io.Copy(archive, file)
+	return err
+}

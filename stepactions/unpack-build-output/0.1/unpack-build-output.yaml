@@ -1,0 +1,47 @@
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: unpack-build-output
+  labels:
+    app.kubernetes.io/version: "0.1.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "1.16.0"
+spec:
+  description: >-
+    Unpack a build-output OCI artifact into an empty directory.
+    The image reference is registry/repo@sha256:<manifest-digest>.
+  params:
+  - name: image
+    type: string
+    description: Image reference registry/repo@sha256:<manifest-digest>.
+  - name: destination
+    type: string
+    description: Empty directory that receives the extracted payload.
+  - name: artifactType
+    type: string
+    description: OCI artifact type required on the manifest.
+    default: application/vnd.konflux.build-output.v1
+  image: localhost/byob-cli:devel
+  command:
+  - /usr/local/bin/byob
+  args:
+  - unpack
+  - --image=$(params.image)
+  - --destination=$(params.destination)
+  - --artifact-type=$(params.artifactType)
+  - --auth-dir=/var/run/byob-registry-auth
+  env:
+  - name: AUTHFILE
+    value: /var/run/byob-registry-auth/config.json
+  - name: CA_FILE
+    value: /etc/pki/tls/certs/ca-custom-bundle.crt
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 0
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+    seccompProfile:
+      type: RuntimeDefault

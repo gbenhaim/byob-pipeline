@@ -1,4 +1,6 @@
-# Upstream versions inspected when implementing ADR 73. All runtime images are pinned.
+# Inspected upstream image pins. Build the local PoC CLI image before use.
+go-builder: registry.access.redhat.com/hi/go:1.27@sha256:54644838229bd919c8718ab13e0696f269884e89d3ad42f052a802944d5e9903
+cli-image: localhost/byob-cli:devel
 task-runner: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
 trusted-artifacts: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
 checkout-bundle: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.2.4@sha256:df3c42d78223f07b40a84dd29e5c8860d14777ffdf150ea08c738770f51216dc

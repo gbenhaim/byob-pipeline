@@ -1,0 +1,148 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: byob-pipeline-policy
+spec:
+  description: |
+    Verify the Chains signature of each snapshot image and run the BYOB
+    Conforma policy on the signed provenance. The Chains public key is
+    Secret chains-public-key key cosign.pub. The integration service injects
+    SNAPSHOT. Resource requests and limits are not part of this check.
+  params:
+  - name: SNAPSHOT
+    type: string
+    description: Snapshot spec supplied by the integration service.
+  results:
+  - name: TEST_OUTPUT
+    description: Short summary of the policy evaluation for each image.
+    value: $(tasks.validate.results.TEST_OUTPUT)
+  tasks:
+  - name: validate
+    taskSpec:
+      results:
+      - name: TEST_OUTPUT
+        description: Short summary of the policy evaluation for each image.
+      stepTemplate:
+        image: quay.io/conforma/cli@sha256:a0cb6fcce80c6d0775e72802e4da58f050ca32ba32e1ea068d314df4a9536837
+        workingDir: /tmp
+        env:
+        - name: HOME
+          value: /tmp
+        - name: SSL_CERT_FILE
+          value: /certs/ca-bundle.crt
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: policy
+          mountPath: /policy
+          readOnly: true
+        - name: certs
+          mountPath: /certs
+          readOnly: true
+        - name: chains-public-key
+          mountPath: /keys
+          readOnly: true
+        - name: registry-auth
+          mountPath: /auth
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      steps:
+      - name: validate
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eu
+          images=$$(printf '%s' "$$SNAPSHOT" | jq -r '.components[].containerImage')
+          test -n "$$images"
+          test -f /certs/ca-bundle.crt
+          test -f /keys/cosign.pub
+          if [ -f /auth/.dockerconfigjson ]; then
+            mkdir -p /tmp/docker
+            cp /auth/.dockerconfigjson /tmp/docker/config.json
+            export DOCKER_CONFIG=/tmp/docker
+          fi
+          rm -rf /tmp/ec
+          mkdir -p /tmp/ec
+          n=0
+          for image in $$images; do
+            n=$$((n + 1))
+            ec validate image \
+              --image "$$image" \
+              --policy /policy/policy.yaml \
+              --public-key /keys/cosign.pub \
+              --ignore-rekor \
+              --strict=false \
+              --info \
+              --show-successes=false \
+              --output "json=/tmp/ec/$$n.json" \
+              --output "appstudio=/tmp/ec/$$n.appstudio.json" \
+              --output "text=/tmp/ec/$$n.txt"
+          done
+          cat /tmp/ec/*.txt > /tmp/report.txt
+          jq -s '
+            (map(.successes) | add // 0) as $$successes |
+            (map(.failures) | add // 0) as $$failures |
+            (map(.warnings) | add // 0) as $$warnings |
+            {
+              timestamp: (.[0].timestamp // (now | tostring)),
+              namespace: (.[0].namespace // ""),
+              successes: $$successes,
+              failures: $$failures,
+              warnings: $$warnings,
+              result: (
+                if $$failures > 0 then "FAILURE"
+                elif $$warnings > 0 then "WARNING"
+                else "SUCCESS"
+                end
+              )
+            }
+          ' /tmp/ec/*.appstudio.json > "$(results.TEST_OUTPUT.path)"
+        env:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+      - name: summary
+        command: ["jq", "."]
+        args: ["$(results.TEST_OUTPUT.path)"]
+      - name: report
+        command: ["cat", "/tmp/report.txt"]
+      - name: assert
+        command: ["jq", "-e"]
+        args:
+        - .result == "SUCCESS" or .result == "WARNING"
+        - $(results.TEST_OUTPUT.path)
+      volumes:
+      - name: policy
+        configMap:
+          name: byob-pipeline-policy
+          items:
+          - key: policy.yaml
+            path: policy.yaml
+          - key: pipeline.rego
+            path: rules/pipeline.rego
+      - name: certs
+        configMap:
+          name: trusted-ca
+          items:
+          - key: ca-bundle.crt
+            path: ca-bundle.crt
+      - name: chains-public-key
+        secret:
+          secretName: chains-public-key
+          defaultMode: 0444
+          items:
+          - key: cosign.pub
+            path: cosign.pub
+      - name: registry-auth
+        secret:
+          secretName: byob-registry-auth
+          optional: true
+          defaultMode: 0444
+      - name: tmp
+        emptyDir: {}

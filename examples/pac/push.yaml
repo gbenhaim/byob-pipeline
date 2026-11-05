@@ -1,0 +1,117 @@
+# Copy to the component repository as .tekton/push.yaml.
+# Replace YOUR_* and REPLACE_WITH_*; bundle digests must come from your actual pushes.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: byob-matrix-
+  labels:
+    pipelines.appstudio.openshift.io/type: build
+  annotations:
+    pipelinesascode.tekton.dev/on-event: '["push"]'
+    pipelinesascode.tekton.dev/on-target-branch: '["main"]'
+spec:
+  taskRunTemplate:
+    serviceAccountName: byob-build
+  params:
+  - name: git-url
+    value: '{{repo_url}}'
+  - name: revision
+    value: '{{revision}}'
+  - name: output-image
+    value: quay.io/YOUR_ORG/component:REPLACE_WITH_UNIQUE_BUILD_TAG
+  - name: oci-storage
+    value: quay.io/YOUR_ORG/component-ta
+  pipelineSpec:
+    description: BYOB checkout, script execution, and OCI packaging using Trusted Artifacts.
+    params:
+    - name: git-url
+      type: string
+      description: Source repository URL.
+    - name: revision
+      type: string
+      description: Exact reviewed source commit.
+    - name: output-image
+      type: string
+      description: Tagged OCI output destination.
+    - name: oci-storage
+      type: string
+      description: Platform-owned Trusted Artifact repository, without tag.
+    workspaces:
+    - name: git-auth
+      optional: true
+    results:
+    - name: IMAGE_URL
+      value: $(tasks.pack.results.IMAGE_URL)
+    - name: IMAGE_DIGEST
+      value: $(tasks.pack.results.IMAGE_DIGEST)
+    - name: CHAINS-GIT_URL
+      value: $(tasks.checkout.results.CHAINS-GIT_URL)
+    - name: CHAINS-GIT_COMMIT
+      value: $(tasks.checkout.results.CHAINS-GIT_COMMIT)
+    tasks:
+    - name: checkout
+      taskRef:
+        resolver: bundles
+        params:
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.2.4@sha256:df3c42d78223f07b40a84dd29e5c8860d14777ffdf150ea08c738770f51216dc
+        - name: name
+          value: git-clone-oci-ta
+        - name: kind
+          value: task
+      params:
+      - name: url
+        value: $(params.git-url)
+      - name: revision
+        value: $(params.revision)
+      - name: ociStorage
+        value: $(params.oci-storage):$(context.pipelineRun.name)-checkout
+      workspaces:
+      - name: basic-auth
+        workspace: git-auth
+    - name: build
+      taskRef:
+        resolver: bundles
+        params:
+        - name: bundle
+          value: quay.io/YOUR_ORG/byob/run-build-remote@sha256:REPLACE_WITH_RUN_BUILD_REMOTE_BUNDLE_DIGEST
+        - name: name
+          value: run-build-remote
+        - name: kind
+          value: task
+      params:
+      - name: image
+        value: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+      - name: build-cmd
+        value:
+        - ./build.sh
+      - name: build-args
+        value: []
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.checkout.results.SOURCE_ARTIFACT)
+      - name: ociStorage
+        value: $(params.oci-storage)
+      matrix:
+        params:
+        - name: PLATFORM
+          value:
+          - linux/amd64
+          - linux/arm64
+    - name: pack
+      taskRef:
+        resolver: bundles
+        params:
+        - name: bundle
+          value: quay.io/YOUR_ORG/byob/pack@sha256:REPLACE_WITH_PACK_BUNDLE_DIGEST
+        - name: name
+          value: pack
+        - name: kind
+          value: task
+      params:
+      - name: BUILD_ARTIFACTS
+        value:
+        - $(tasks.build.results.BUILD_ARTIFACT[*])
+      - name: IMAGE
+        value: $(params.output-image)
+      - name: artifactType
+        value: application/vnd.konflux.build-output.v1
